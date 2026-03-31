@@ -1,0 +1,429 @@
+/* --- 0. 变量与基础设置 (Theme Variables & Base) --- */
+:root {
+    /* 深色主题默认变量 */
+    --color-bg-primary: #1e1e2e; /* 主背景 */
+    --color-bg-secondary: #27283b; /* 卡片/Header背景 */
+    --color-text-primary: #fefefe; /* 主要文字 */
+    --color-text-secondary: #a0a0c0; /* 次要文字 */
+    --color-accent: #89b4fa; /* 主强调色 (蓝色) */
+    --color-shadow: rgba(0, 0, 0, 0.4);
+    --color-border: #44475a; /* 边框/分割线颜色 */
+
+    /* 强调色板 */
+    --accent-1: #8be9fd; /* 青色/统一日志 */
+    --accent-2: #ff79c6; /* 粉色/Redis */
+    --accent-3: #bd93f9; /* 紫色/测试 */
+    --accent-4: #50fa7b; /* 绿色/支付 */
+    --accent-5: #ffb86c; /* 橙色/监控 */
+
+    --transition-speed: 0.3s;
+}
+
+/* 浅色模式切换 (Light Mode - 细节) */
+.light-mode {
+    --color-bg-primary: #f8f9fa; /* 浅色主背景 */
+    --color-bg-secondary: #ffffff; /* 浅色卡片/Header背景 */
+    --color-text-primary: #212529; /* 浅色主要文字 */
+    --color-text-secondary: #6c757d; /* 浅色次要文字 */
+    --color-accent: #007bff; /* 浅色主强调色 (蓝色) */
+    --color-shadow: rgba(0, 0, 0, 0.15);
+    --color-border: #e9ecef; /* 浅色边框/分割线颜色 */
+}
+
+/* ---------------------------------------------------- */
+/* 浅色模式下需要覆盖的样式 */
+/* ---------------------------------------------------- */
+.light-mode #search-input {
+    background-color: #f1f3f5; /* 浅色搜索框背景 */
+    border: 1px solid var(--color-border);
+    color: var(--color-text-primary);
+}
+
+.light-mode #sidebar-nav {
+    border-right: 1px solid var(--color-border);
+}
+
+.light-mode .tool-card {
+    background-color: var(--color-bg-secondary);
+    box-shadow: 0 4px 10px var(--color-shadow);
+    border: 1px solid var(--color-border); /* 添加边框让卡片更清晰 */
+}
+
+.light-mode .category-block {
+    border-top: 1px dashed var(--color-border);
+}
+
+.light-mode footer {
+    border-top: 1px solid var(--color-border);
+}
+
+.light-mode .aux-link {
+    background-color: #e9ecef; /* 浅色辅助链接背景 */
+    color: var(--color-text-primary);
+}
+/* ---------------------------------------------------- */
+
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    line-height: 1.6;
+    transition: background-color var(--transition-speed), color var(--transition-speed);
+}
+
+a {
+    text-decoration: none;
+    color: var(--color-accent);
+}
+
+/* --- 1. 头部导航 (Header & Search) --- */
+#header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 40px;
+    background-color: var(--color-bg-secondary);
+    box-shadow: 0 2px 8px var(--color-shadow);
+    position: sticky; /* 吸顶效果 */
+    top: 0;
+    z-index: 100;
+}
+
+.logo {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--color-accent);
+}
+
+.search-bar {
+    flex-grow: 1;
+    max-width: 600px;
+    margin: 0 40px;
+    display: flex;
+    position: relative;
+}
+
+#search-input {
+    width: 100%;
+    padding: 10px 45px 10px 15px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background-color: #383a59;
+    color: var(--color-text-primary);
+    font-size: 1rem;
+    transition: all var(--transition-speed);
+}
+
+#search-input::placeholder {
+    color: var(--color-text-secondary);
+}
+
+#search-input:focus {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 30%, transparent); 
+    outline: none;
+}
+
+.search-bar button {
+    position: absolute;
+    right: 0;
+    top: 0;
+    height: 100%;
+    background: none;
+    border: none;
+    color: var(--color-text-secondary);
+    padding: 0 15px;
+    cursor: pointer;
+}
+
+.status-widgets {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+/* 环境 Tag */
+.env-tag {
+    padding: 5px 10px;
+    border-radius: 5px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    background-color: var(--accent-4);
+    color: var(--color-bg-primary);
+}
+
+/* 通知徽章 */
+.notifications, #theme-toggle {
+    background: none;
+    border: none;
+    color: var(--color-text-primary);
+    font-size: 1.1rem;
+    cursor: pointer;
+    position: relative;
+    padding: 5px;
+    border-radius: 5px;
+    transition: color 0.2s;
+}
+
+.notifications:hover, #theme-toggle:hover {
+    color: var(--color-accent);
+}
+
+.badge {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    background-color: #ff5555;
+    color: white;
+    border-radius: 50%;
+    padding: 2px 6px;
+    font-size: 0.7rem;
+    line-height: 1;
+}
+
+
+/* --- 2. 侧边导航目录 (Sidebar Nav) --- */
+#sidebar-nav {
+    position: fixed;
+    left: 0;
+    top: 80px; 
+    width: 200px;
+    height: calc(100vh - 80px);
+    padding: 20px;
+    background-color: var(--color-bg-secondary);
+    border-right: 1px solid var(--color-border);
+    z-index: 90;
+}
+
+#sidebar-nav h3 {
+    margin-bottom: 15px;
+    color: var(--color-text-primary);
+    font-size: 1.1rem;
+}
+
+#toc-list {
+    list-style: none;
+}
+
+#toc-list li a {
+    display: block;
+    padding: 8px 0;
+    color: var(--color-text-secondary);
+    font-size: 0.95rem;
+    transition: color 0.2s, transform 0.2s;
+}
+
+#toc-list li a:hover {
+    color: var(--color-accent);
+    transform: translateX(5px);
+}
+
+
+/* --- 3. 主内容区与分类 (Main Content & Categories) --- */
+#main-content {
+    margin-left: 200px; 
+    padding: 40px;
+}
+
+.category-block {
+    margin-bottom: 30px; /* 减小分类块之间的间距 */
+    padding-top: 20px;
+    border-top: 1px dashed var(--color-border);
+}
+
+.category-title {
+    font-size: 1.6rem; /* 略微减小标题字体 */
+    margin-bottom: 20px; /* 减小标题和卡片的间距 */
+    font-weight: 600;
+    color: var(--color-text-primary);
+}
+
+/* 图标光晕效果 */
+.icon-glow {
+    margin-right: 10px;
+    color: var(--color-accent);
+    text-shadow: 0 0 5px color-mix(in srgb, var(--color-accent) 50%, transparent);
+}
+
+/* --- 4. 卡片网格布局 (Card Grid Layout) --- */
+.card-grid {
+    display: grid;
+    /* 核心优化：减小最小宽度，允许每行容纳更多卡片（约 4-5 个） */
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 15px; /* 减小卡片之间的间距 */
+}
+
+/* --- 5. 工具卡片 (Tool Card Styles - 尺寸优化) --- */
+.tool-card {
+    display: flex;
+    flex-direction: column;
+    /* 核心优化：减小卡片内边距，减少高度 */
+    padding: 15px; 
+    background-color: var(--color-bg-secondary);
+    border-radius: 10px; /* 略微减小圆角 */
+    box-shadow: 0 3px 8px var(--color-shadow); /* 减小阴影 */
+    color: var(--color-text-primary);
+    transition: all var(--transition-speed) cubic-bezier(0.25, 0.46, 0.45, 0.94); 
+    position: relative;
+    overflow: hidden;
+    border: 1px solid transparent; 
+}
+
+/* 卡片悬停效果：保持不变 */
+.tool-card:hover {
+    transform: translateY(-3px); /* 略微减小抬升高度 */
+    box-shadow: 0 6px 15px color-mix(in srgb, var(--color-accent) 30%, transparent), 0 3px 4px var(--color-shadow);
+}
+
+.card-icon {
+    font-size: 2rem; /* 略微减小图标尺寸 */
+    margin-bottom: 8px; /* 减小图标和标题间距 */
+    color: var(--color-accent);
+}
+
+/* 大图标监控卡片 */
+.tool-card.big-icon .card-icon {
+    font-size: 3rem; /* 对应减小大图标尺寸 */
+    margin-bottom: 10px;
+}
+
+.card-title {
+    font-size: 1.1rem; /* 略微减小标题字体 */
+    font-weight: 600;
+    margin-bottom: 3px; /* 减小标题和副标题间距 */
+    color: var(--color-text-primary); 
+}
+
+.card-subtitle {
+    font-size: 0.85rem; /* 略微减小副标题字体 */
+    color: var(--color-text-secondary);
+}
+
+/* 小卡片 (保持不变，因为它们本身就很小) */
+.tool-card.small {
+    padding: 15px;
+    text-align: center;
+}
+.tool-card.small .card-icon {
+    font-size: 1.5rem;
+    margin-bottom: 5px;
+}
+.tool-card.small .card-title {
+    font-size: 1rem;
+}
+.tool-card.small .card-subtitle {
+    display: none;
+}
+
+
+/* 强调色卡片边框/图标 (保持不变) */
+.tool-card.accent-1 .card-icon { color: var(--accent-1); }
+.tool-card.accent-2 .card-icon { color: var(--accent-2); }
+.tool-card.accent-3 .card-icon { color: var(--accent-3); }
+.tool-card.accent-4 .card-icon { color: var(--accent-4); }
+.tool-card.accent-5 .card-icon { color: var(--accent-5); }
+
+
+/* 紧急状态 (保持不变) */
+.card-subtitle.urgent {
+    color: white;
+    background-color: #ff5555;
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 700;
+    animation: pulse 1.5s infinite; 
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.7; }
+    100% { opacity: 1; }
+}
+
+
+/* --- 6. 辅助链接列表 (Auxiliary Links - 保持不变) --- */
+.link-list-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+.aux-link {
+    display: flex;
+    align-items: center;
+    padding: 8px 15px;
+    border-radius: 8px;
+    background-color: #383a59; 
+    color: var(--color-text-primary);
+    font-size: 1rem;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.aux-link i {
+    margin-right: 8px;
+    color: var(--color-accent);
+}
+
+.aux-link:hover {
+    background-color: var(--color-accent);
+    color: var(--color-bg-primary);
+    box-shadow: 0 4px 8px var(--color-shadow);
+}
+.aux-link:hover i {
+    color: var(--color-bg-primary);
+}
+
+
+/* --- 7. 底部 (Footer) --- */
+footer {
+    padding: 20px;
+    text-align: center;
+    font-size: 0.9rem;
+    color: var(--color-text-secondary);
+    border-top: 1px solid var(--color-border);
+    margin-left: 200px; 
+}
+
+/* --- 8. 搜索结果高亮 (保持不变) --- */
+mark {
+    background-color: var(--accent-5); 
+    color: var(--color-bg-primary);
+    padding: 0 2px;
+    border-radius: 2px;
+}
+
+
+/* --- 9. 响应式调整 (Responsive Design) --- */
+@media (max-width: 1024px) {
+    #sidebar-nav {
+        display: none; 
+    }
+    #main-content, footer {
+        margin-left: 0;
+        padding: 20px;
+    }
+    .card-grid {
+        /* 在平板尺寸上，保持较小的卡片尺寸，保证效率 */
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); 
+    }
+    #header {
+        flex-wrap: wrap;
+        padding: 15px 20px;
+    }
+    .search-bar {
+        order: 3;
+        width: 100%;
+        margin: 15px 0 0 0;
+    }
+    .status-widgets {
+        gap: 10px;
+    }
+}
