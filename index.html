@@ -1,1 +1,326 @@
-121212
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JDDO 智能工作台 - 蓝宇知道</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="stylesheet" href="/jd/style.css">
+</head>
+<body class="dark-mode">
+
+    <nav id="sidebar-nav">
+        <h3>快速目录</h3>
+        <ul id="toc-list">
+            </ul>
+    </nav>
+
+    <header id="header">
+        <div class="logo">
+            <i class="fas fa-rocket"></i> JDDO Launchpad
+        </div>
+        <div class="search-bar">
+            <input type="text" id="search-input" placeholder="快速搜索应用、工具或状态 (Ctrl+K)">
+            <button aria-label="搜索"><i class="fas fa-search"></i></button>
+        </div>
+        <div class="status-widgets">
+            <span class="env-tag production" title="当前环境：生产">
+                <i class="fas fa-cloud"></i> Prod
+            </span>
+            <button class="notifications" title="联系支持">
+                <a href="timline://chat/?topin=yangfeiyu" style="color: inherit;"><i class="fas fa-headset"></i></a>
+                <span class="badge">S</span>
+            </button>
+            <button id="theme-toggle" title="切换主题">
+                <i class="fas fa-sun"></i>
+            </button>
+        </div>
+    </header>
+
+    <main id="main-content">
+
+        <section class="category-block" id="platform-tools">
+            <h2 class="category-title"><i class="fas fa-toolbox icon-glow"></i> 核心平台工具</h2>
+            <div class="card-grid">
+                <a href="http://digger.jd.com/" class="tool-card accent-1" data-label="统一日志, 链路追踪" target="_blank">
+                    <div class="card-icon"><i class="fas fa-file-invoice"></i></div>
+                    <div class="card-title">统一日志</div>
+                    <div class="card-subtitle">系统日志/链路追踪</div>
+                </a>
+                <a href="http://mydb.jdfmgt.com/" class="tool-card" data-label="MyDB, 数据库管理" target="_blank">
+                    <div class="card-icon"><i class="fas fa-database"></i></div>
+                    <div class="card-title">MyDB</div>
+                    <div class="card-subtitle">数据库管理平台</div>
+                </a>
+                <a href="http://schedule.jd.com/" class="tool-card accent-1" data-label="统一调度定时, schedule" target="_blank">
+                    <div class="card-icon"><i class="fas fa-clock"></i></div>
+                    <div class="card-title">统一调度定时</div>
+                    <div class="card-subtitle">定时任务管理</div>
+                </a>
+                <a href="http://sgm.jd.com/" class="tool-card" data-label="SGM" target="_blank">
+                    <div class="card-icon"><i class="fas fa-tasks"></i></div>
+                    <div class="card-title">SGM</div>
+                    <div class="card-subtitle">监控</div>
+                </a>
+                <a href="https://pay-open.jdfmgt.com/y66o3d" class="tool-card accent-1" data-label="任务平台" target="_blank">
+                    <div class="card-icon"><i class="fas fa-clipboard-list"></i></div>
+                    <div class="card-title">任务平台</div>
+                    <div class="card-subtitle">Pay-Open任务</div>
+                </a>
+                <a href="https://dms.yunjian.jd.com/dms/sqlConsole/index/index/1" class="tool-card" data-label="dms(CK查询)" target="_blank">
+                    <div class="card-icon"><i class="fas fa-search-plus"></i></div>
+                    <div class="card-title">dms (CK查询)</div>
+                    <div class="card-subtitle urgent">数据查询服务</div>
+                </a>
+
+                <a href="http://uniconfm.jd.com/uniconfig.do" class="tool-card" data-label="统一配置中心, 配置" target="_blank">
+                    <div class="card-icon"><i class="fas fa-cog"></i></div>
+                    <div class="card-title">统一配置中心</div>
+                    <div class="card-subtitle">全局配置管理</div>
+                </a>
+                <a href="https://pay-open.jdfmgt.com/" class="tool-card accent-1" data-label="pay-open" target="_blank">
+                    <div class="card-icon"><i class="fas fa-link"></i></div>
+                    <div class="card-title">pay-open</div>
+                    <div class="card-subtitle urgent">支付开放平台</div>
+                </a>
+                <a href="https://taishan.jd.com/" class="tool-card" data-label="泰山, 内部工具" target="_blank">
+                    <div class="card-icon"><i class="fas fa-mountain"></i></div>
+                    <div class="card-title">泰山</div>
+                </a>
+                <a href="http://jagile.jd.com/jdosCD/jdt/apps" class="tool-card" data-label="行云部署" target="_blank">
+                    <div class="card-icon"><i class="fas fa-rocket"></i></div>
+                    <div class="card-title">行云部署</div>
+                </a>
+                <a href="https://dc.jd.com/" class="tool-card accent-1" data-label="大促备战平台" target="_blank">
+                    <div class="card-icon"><i class="fas fa-fire"></i></div>
+                    <div class="card-title">大促备战平台</div>
+                    <div class="card-subtitle urgent">关键备战入口</div>
+                </a>
+                <a href="https://master.jdfmgt.com/" class="tool-card" data-label="ERP原红页(含路由)" target="_blank">
+                    <div class="card-icon"><i class="fas fa-th-large"></i></div>
+                    <div class="card-title">ERP原红页</div>
+                    <div class="card-subtitle urgent">含路由</div>
+                </a>
+
+                <a href="http://jagile.jd.com/easyone" class="tool-card" data-label="easyone" target="_blank">
+                    <div class="card-icon"><i class="fas fa-laptop-code"></i></div>
+                    <div class="card-title">easyone</div>
+                </a>
+                <a href="https://joyspace.jd.com/" class="tool-card" data-label="joyspace" target="_blank">
+                    <div class="card-icon"><i class="fas fa-project-diagram"></i></div>
+                    <div class="card-title">JoySpace</div>
+                </a>
+                <a href="https://cf.jd.com/" class="tool-card" data-label="CF知识平台" target="_blank">
+                    <div class="card-icon"><i class="fas fa-book"></i></div>
+                    <div class="card-title">CF知识平台</div>
+                </a>
+                <a href="https://events.jd.com/order/riskMessage" class="tool-card" data-label="风险提报" target="_blank">
+                    <div class="card-icon"><i class="fas fa-exclamation-triangle"></i></div>
+                    <div class="card-title">风险提报</div>
+                    <div class="card-subtitle urgent">高优! 记录潜在风险</div>
+                </a>
+                <a href="http://jagile.jd.com/jingdu/interface" class="tool-card" data-label="静笃测试" target="_blank">
+                    <div class="card-icon"><i class="fas fa-flask"></i></div>
+                    <div class="card-title">静笃测试</div>
+                </a>
+            </div>
+        </section>
+
+        <section class="category-block" id="dev-middleware">
+            <h2 class="category-title"><i class="fas fa-code-branch icon-glow"></i> 开发与中间件</h2>
+            <div class="card-grid">
+                <a href="http://nexus.cbpmgt.com/nexus/index.html#welcome" class="tool-card small" data-label="金融Maven" target="_blank">
+                    <div class="card-icon"><i class="fas fa-cubes"></i></div>
+                    <div class="card-title">金融Maven</div>
+                </a>
+                <a href="http://artifactory.jd.com" class="tool-card small" data-label="京东私服" target="_blank">
+                    <div class="card-icon"><i class="fas fa-server"></i></div>
+                    <div class="card-title">京东私服</div>
+                </a>
+                <a href="http://c.runoob.com/" class="tool-card small" data-label="在线工具" target="_blank">
+                    <div class="card-icon"><i class="fas fa-tools"></i></div>
+                    <div class="card-title">在线工具</div>
+                </a>
+                <a href="https://jddo.cn/json.html" class="tool-card small" data-label="JSON" target="_blank">
+                    <div class="card-icon"><i class="fas fa-code"></i></div>
+                    <div class="card-title">JSON 工具</div>
+                </a>
+                
+                <a href="https://r2m.jd.com/" class="tool-card small accent-2" data-label="R2M金融redis" target="_blank">
+                    <div class="card-icon"><i class="fas fa-database"></i></div>
+                    <div class="card-title">R2M金融redis</div>
+                </a>
+                <a href="http://dp.jd.com/idenew/index.html#/offlineBeta" class="tool-card small" data-label="数仓查询" target="_blank">
+                    <div class="card-icon"><i class="fas fa-chart-bar"></i></div>
+                    <div class="card-title">数仓查询</div>
+                </a>
+                <a href="http://dp.jd.com/jrc/task" class="tool-card small" data-label="Flink任务" target="_blank">
+                    <div class="card-icon"><i class="fas fa-stream"></i></div>
+                    <div class="card-title">Flink任务</div>
+                </a>
+                <a href="http://uniconfig.jr.jd.com/uniconfig.do" class="tool-card small accent-3" data-label="测试, 统一配制, 环境" target="_blank">
+                    <div class="card-icon"><i class="fas fa-bug"></i></div>
+                    <div class="card-title">测试环境统一配制</div>
+                </a>
+            </div>
+        </section>
+
+        <section class="category-block" id="business-systems">
+            <h2 class="category-title"><i class="fas fa-money-check-alt icon-glow"></i> 核心业务/ERP 系统</h2>
+            <div class="card-grid">
+                <a href="http://rferp.jdfin.local/refund/refundDataQuery.do" class="tool-card" data-label="ERP, 退款异步化" target="_blank">
+                    <div class="card-icon"><i class="fas fa-hand-holding-usd"></i></div>
+                    <div class="card-title">退款异步化</div>
+                </a>
+                <a href="http://cpayerp.jdfmgt.com/" class="tool-card" data-label="cpayERP" target="_blank">
+                    <div class="card-icon"><i class="fas fa-file-invoice-dollar"></i></div>
+                    <div class="card-title">cpayERP</div>
+                </a>
+                
+                <a href="http://refaudit.jr.jd.com/queryRefundData.do" class="tool-card" data-label="金融退款综合" target="_blank">
+                    <div class="card-icon"><i class="fas fa-search-dollar"></i></div>
+                    <div class="card-title">金融退款综合</div>
+                </a>
+                <a href="http://refaudit.jr.jd.com/showInfo.do" class="tool-card" data-label="金融退款应实收" target="_blank">
+                    <div class="card-icon"><i class="fas fa-file-invoice"></i></div>
+                    <div class="card-title">金融退款应实收</div>
+                </a>
+
+                <a href="http://refaudit.jr.jd.com/" class="tool-card" data-label="金融台账" target="_blank">
+                    <div class="card-icon"><i class="fas fa-receipt"></i></div>
+                    <div class="card-title">金融台账</div>
+                </a>
+                
+                <a href="http://online.cbpmgt.com/" class="tool-card accent-4" data-label="流程工单Online" target="_blank">
+                    <div class="card-icon"><i class="fas fa-tasks"></i></div>
+                    <div class="card-title">流程工单Online</div>
+                    <div class="card-subtitle">待办/流程处理</div>
+                </a>
+                <a href="https://pay-open.jdfmgt.com/" class="tool-card accent-4" data-label="支付服务平台" target="_blank">
+                    <div class="card-icon"><i class="fas fa-credit-card"></i></div>
+                    <div class="card-title">支付服务平台</div>
+                    <div class="card-subtitle urgent">支付网关管理</div>
+                </a>
+                <a href="http://aichat.jd.com/" class="tool-card accent-4" data-label="AIChat" target="_blank">
+                    <div class="card-icon"><i class="fas fa-comments"></i></div>
+                    <div class="card-title">AIChat</div>
+                    <div class="card-subtitle" style="color:red">AI 助手</div>
+                </a>
+                <a href="http://jagile.jd.com/" class="tool-card" data-label="协作行云" target="_blank">
+                    <div class="card-icon"><i class="fas fa-user-friends"></i></div>
+                    <div class="card-title">协作行云</div>
+                </a>
+                <a href="https://7qb-erp.jd.com/generalPay-erp/page-f2wPUc1s" class="tool-card" data-label="微信商户入驻" target="_blank">
+                    <div class="card-icon"><i class="fab fa-weixin"></i></div>
+                    <div class="card-title">微信商户入驻</div>
+                    <div class="card-subtitle urgent">商户管理</div>
+                </a>
+                <a href="http://01pay.jd.com/" class="tool-card" data-label="零售内单收银台" target="_blank">
+                    <div class="card-icon"><i class="fas fa-cash-register"></i></div>
+                    <div class="card-title">零售内单收银台</div>
+                </a>
+
+                <a href="http://ecurity.jr.jd.com/tradeStatusCreateView.do" class="tool-card" data-label="金石交易" target="_blank">
+                    <div class="card-icon"><i class="fas fa-shield-alt"></i></div>
+                    <div class="card-title">金石交易</div>
+                    <div class="card-subtitle">风控查询</div>
+                </a>
+                <a href="http://ecurity.jr.jd.com/payInfoView.do" class="tool-card" data-label="支付信息查询" target="_blank">
+                    <div class="card-icon"><i class="fas fa-search"></i></div>
+                    <div class="card-title">支付信息查询</div>
+                </a>
+                <a href="http://ecurity.jr.jd.com/" class="tool-card" data-label="ecurity首页" target="_blank">
+                    <div class="card-icon"><i class="fas fa-home"></i></div>
+                    <div class="card-title">Ecurity 首页</div>
+                </a>
+
+                <a href="http://orderbank.360buy.com/" class="tool-card" data-label="订单台账360" target="_blank">
+                    <div class="card-icon"><i class="fas fa-clipboard-list"></i></div>
+                    <div class="card-title">订单台账360</div>
+                </a>
+                <a href="http://fdm.fm.jd.com/publicMenuNew.action?menuType=zjzwgl" class="tool-card" data-label="银行资金账" target="_blank">
+                    <div class="card-icon"><i class="fas fa-piggy-bank"></i></div>
+                    <div class="card-title">银行资金账</div>
+                </a>
+            </div>
+        </section>
+
+        <section class="category-block" id="monitoring-systems">
+            <h2 class="category-title"><i class="fas fa-chart-line icon-glow"></i> 实时监控与运维</h2>
+            <div class="card-grid">
+                <a href="http://bizm2.jd.com/" class="tool-card big-icon" data-label="业务监控, 心跳" target="_blank">
+                    <div class="card-icon"><i class="fas fa-heartbeat"></i></div>
+                    <div class="card-title">业务监控</div>
+                </a>
+                <a href="http://brolly.jdos.jd.com/" class="tool-card big-icon" data-label="JDOS机器监控, 运维" target="_blank">
+                    <div class="card-icon"><i class="fas fa-server"></i></div>
+                    <div class="card-title">JDOS机器监控</div>
+                </a>
+                <a href="https://jddops.jd.com/" class="tool-card big-icon" data-label="jddops京东云运维" target="_blank">
+                    <div class="card-icon"><i class="fas fa-cogs"></i></div>
+                    <div class="card-title">jddops运维</div>
+                </a>
+
+                <a href="https://grafana-payment-new.jd.com/" class="tool-card big-icon accent-5" data-label="新Grafana" target="_blank">
+                    <div class="card-icon"><i class="fas fa-tachometer-alt"></i></div>
+                    <div class="card-title">新Grafana</div>
+                </a>
+                <a href="https://grafana-payment.jdfmgt.com/" class="tool-card big-icon accent-5" data-label="Grafana" target="_blank">
+                    <div class="card-icon"><i class="fas fa-tachometer-alt"></i></div>
+                    <div class="card-title">Grafana (Old)</div>
+                </a>
+                
+                <a href="http://payment-kibana.jd.com/" class="tool-card big-icon accent-5" data-label="kibana" target="_blank">
+                    <div class="card-icon"><i class="fas fa-chart-area"></i></div>
+                    <div class="card-title">Kibana (Payment)</div>
+                </a>
+                
+                <a href="http://mdc.jd.com/" class="tool-card big-icon" data-label="MDC" target="_blank">
+                    <div class="card-icon"><i class="fas fa-desktop"></i></div>
+                    <div class="card-title">MDC</div>
+                </a>
+                <a href="http://dting.jd.com/" class="tool-card big-icon" data-label="DT谛听" target="_blank">
+                    <div class="card-icon"><i class="fas fa-headphones"></i></div>
+                    <div class="card-title">DT谛听</div>
+                </a>
+
+                <a href="http://dbdashboard.jdfmgt.com/" class="tool-card big-icon" data-label="数据库监控" target="_blank">
+                    <div class="card-icon"><i class="fas fa-database"></i></div>
+                    <div class="card-title">数据库监控</div>
+                </a>
+                <a href="http://cleverdb.jdfmgt.com/#/dashboard" class="tool-card big-icon" data-label="cleverdb" target="_blank">
+                    <div class="card-icon"><i class="fas fa-database"></i></div>
+                    <div class="card-title">CleverDB</div>
+                </a>
+                
+                <a href="http://easybi.jd.com/bi/#/datamax?code=84203FD24A8F68ADEED2C07BFF8646C535668D086C79AE25231402B37B0B12E7" class="tool-card big-icon" data-label="台账异常状态监控" target="_blank">
+                    <div class="card-icon"><i class="fas fa-exclamation-circle"></i></div>
+                    <div class="card-title">台账异常监控</div>
+                </a>
+            </div>
+        </section>
+
+        <section class="category-block" id="other-links">
+            <h2 class="category-title"><i class="fas fa-link icon-glow"></i> 辅助与快捷链接</h2>
+            <div class="link-list-grid">
+                <a href="http://cmp.jdfmgt.com/" class="aux-link" data-label="云管平台" target="_blank"><i class="fas fa-cloud"></i> 云管平台</a>
+                <a href="http://mega.db.cbpmgt.com/nav/" class="aux-link" data-label="DBA导航" target="_blank"><i class="fas fa-database"></i> DBA导航</a>
+                <a href="http://rpa-ops.jd.com/" class="aux-link" data-label="RPA自动化服务平台" target="_blank"><i class="fas fa-robot"></i> RPA自动化</a>
+                <a href="https://bizdata.clear.jd.com/" class="aux-link" data-label="业务数据查询平台" target="_blank"><i class="fas fa-chart-pie"></i> 业务数据查询平台</a>
+                <a href="https://jdvision.jd.com/jdv/view?release=83326fe6aa784130aa3cc9def154901e" class="aux-link" data-label="断点大屏" target="_blank"><i class="fas fa-tv"></i> 断点大屏</a>
+                <a href="/jd/dbroute.html" class="aux-link" data-label="内单各系统分库分表" target="_blank"><i class="fas fa-calculator"></i> 内单分库分表</a>
+                <a href="http://np.jd.com/" class="aux-link" data-label="网络平台查域名" target="_blank"><i class="fas fa-globe"></i> 网络平台查域名</a>
+                <a href="http://eit.jd.com/" class="aux-link" data-label="桌面支持" target="_blank"><i class="fas fa-desktop"></i> 桌面支持</a>
+            </div>
+        </section>
+
+    </main>
+
+    <footer>
+        <i class="fas fa-lock"></i> 内部系统 &copy; 2025 | 
+        <a href="https://beian.miit.gov.cn" target="_blank">京ICP备15002377号</a>
+    </footer>
+
+    <script src="/jd/script.js"></script>
+</body>
+</html>
