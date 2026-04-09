@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>分库分表路由计算工具</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="stylesheet" href="./style.css"> 
+    
+    <script>
+        (function() {
+            const savedTheme = localStorage.getItem('theme'); 
+            
+            // 只需要操作 document.documentElement (<html>)
+            if (savedTheme === 'light') {
+                document.documentElement.classList.remove('dark-mode'); 
+                document.documentElement.classList.add('light-mode');
+            } else if (savedTheme === 'dark' || savedTheme === null) {
+                // 如果是 dark 或未设置 (默认), 确保 dark-mode 存在
+                document.documentElement.classList.remove('light-mode');
+                document.documentElement.classList.add('dark-mode'); 
+            }
+            // **已删除导致错误的 document.body 操作**
+        })();
+    </script>
+</head>
+
+<body>
+
+    <div id="main-content" style="margin-left: 0; padding: 40px;">
+        <div id="db-router-tool">
+            <header>
+                <h1 class="category-title"><i class="fas fa-calculator icon-glow"></i> 核心系统分库分表路由计算</h1>
+                <p class="card-subtitle" style="margin-bottom: 25px;">输入 **tradeNo (交易单号)** 或 **payId (支付单号)** 即可查询路由信息。</p>
+            </header>
+
+            <section class="search-bar input-area" style="max-width: 800px; margin: 0 auto 40px auto; display: block; border-radius: 10px; background-color: var(--color-bg-secondary); padding: 20px;">
+                <p style="text-align: left; margin-bottom: 10px; color: var(--color-text-secondary); font-size: 1rem;">
+                    <i class="fas fa-barcode" style="color: var(--color-accent); margin-right: 5px;"></i> 交易/支付单号: 
+                </p>
+                <input type="text" id="tradeNoInput" oninput="calculateRoute()" placeholder="请输入交易单号/支付单号" 
+                       style="width: 100%; margin: 0; padding: 10px 15px; border: 1px solid var(--color-border); border-radius: 8px; background-color: var(--color-bg-primary); color: var(--color-text-primary);">
+            </section>
+
+            <section class="card-grid result-grid">
+                
+                <div class="tool-card result-card accent-3">
+                    <div class="card-header card-title"><i class="fas fa-shield-alt card-icon"></i> 金石交易</div>
+                    <div class="card-content card-subtitle" style="font-size: 1em; color: var(--color-text-primary);">
+                        集群: <strong id="gs-cluster" style="color: var(--accent-3);">---</strong> <br>
+                        分库: <strong id="gs-db">---</strong> <br>
+                        分表: <strong id="gs-table">---</strong>
+                    </div>
+                </div>
+
+                <div class="tool-card result-card accent-4">
+                    <div class="card-header card-title"><i class="fas fa-shopping-cart card-icon"></i> 商城交易 (旧单号)</div>
+                    <div class="card-content card-subtitle" style="font-size: 1em; color: var(--color-text-primary);">
+                        分库: <strong id="mall-old-db">---</strong> <br>
+                        分表: <strong id="mall-old-table">---</strong>
+                    </div>
+                </div>
+
+                <div class="tool-card result-card accent-4">
+                    <div class="card-header card-title"><i class="fas fa-truck card-icon"></i> 商城交易 (新单号)</div>
+                    <div class="card-content card-subtitle" style="font-size: 1em; color: var(--color-text-primary);">
+                        分库: <strong id="mall-new-db">---</strong> <br>
+                        分表: <strong id="mall-new-table">---</strong>
+                    </div>
+                </div>
+
+                <div class="tool-card result-card accent-5">
+                    <div class="card-header card-title"><i class="fas fa-coins card-icon"></i> 长城全渠道 (生产)</div>
+                    <div class="card-content card-subtitle" style="font-size: 1em; color: var(--color-text-primary);">
+                        分库: <strong id="cc-prod-db">---</strong> <br>
+                        分表: <strong id="cc-prod-table">---</strong>
+                    </div>
+                </div>
+
+                <div class="tool-card result-card accent-2">
+                    <div class="card-header card-title"><i class="fas fa-undo-alt card-icon"></i> 长城全渠道退款 (生产)</div>
+                    <div class="card-content card-subtitle" style="font-size: 1em; color: var(--color-text-primary);">
+                        分库: <strong id="cc-refund-prod-db">---</strong> <br>
+                        分表: <strong id="cc-refund-prod-table">---</strong>
+                    </div>
+                </div>
+
+                <div class="tool-card result-card accent-3">
+                    <div class="card-header card-title"><i class="fas fa-flask card-icon"></i> 长城全渠道 (测试环境)</div>
+                    <div class="card-content card-subtitle" style="font-size: 1em; color: var(--color-text-primary);">
+                        分库: <strong id="cc-test-db">---</strong> <br>
+                        分表: <strong id="cc-test-table">---</strong>
+                    </div>
+                </div>
+
+                <div class="tool-card result-card accent-2">
+                    <div class="card-header card-title"><i class="fas fa-flask card-icon"></i> 长城全渠道退款 (测试环境)</div>
+                    <div class="card-content card-subtitle" style="font-size: 1em; color: var(--color-text-primary);">
+                        分库: <strong id="cc-refund-test-db">---</strong> <br>
+                        分表: <strong id="cc-refund-test-table">---</strong>
+                    </div>
+                </div>
+
+                <div class="tool-card result-card urgent">
+                    <div class="card-header card-title"><i class="fas fa-bug card-icon"></i> SuperTrade (买一试三X系统)</div>
+                    <div class="card-content card-subtitle urgent-result" style="font-size: 1em; color: var(--color-text-primary);">
+                        分库: <strong id="st-db">---</strong> <br>
+                        分表: <strong id="st-table">---</strong>
+                    </div>
+                </div>
+
+                <div class="tool-card result-card urgent">
+                    <div class="card-header card-title"><i class="fas fa-sitemap card-icon"></i> 断点 (BreakPoint)</div>
+                    <div class="card-content card-subtitle urgent-result" style="font-size: 1em; color: var(--color-text-primary);">
+                        分库: <strong id="bp-db">---</strong> <br>
+                        分表: <strong id="bp-table">---</strong>
+                    </div>
+                </div>
+
+            </section>
+
+            <section class="category-block">
+                <h2 class="category-title"><i class="fas fa-info-circle icon-glow"></i> 系统分库分表规则概览</h2>
+                <div class="link-list-grid">
+                    <a class="aux-link"><i class="fas fa-dot-circle"></i> 金石交易： **3个集群**，每个集群 **20个库**，每个库 **200个表**。</a>
+                    <a class="aux-link"><i class="fas fa-dot-circle"></i> 商城交易： **20个库**，每个库 **200个表**。</a>
+                    <a class="aux-link"><i class="fas fa-dot-circle"></i> 长城全渠道： **2个库**，每个库 **200个表**。</a>
+                    <a class="aux-link"><i class="fas fa-dot-circle"></i> SuperTrade (买一试三X系统)： **2个库**，每个库 **200个表**。</a>
+                    <a class="aux-link"><i class="fas fa-dot-circle"></i> 断点 (BreakPoint)： **32个库**，每个库 **200个表**。</a>
+                </div>
+            </section>
+        </div>
+    </div>
+
+
+    <script>
+        // --- 1. 常量定义 ---
+        const CLUSTER_NAMES = ['A', 'B', 'C'];
+        
+        // --- 2. HASH 算法 ---
+        function hashcode(str) {
+            if (!str) return 0;
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                const char = str.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash; // 强制转换为 32 位整数
+            }
+            return Math.abs(hash);
+        }
+
+        function hashcodeByStr(str) {
+            if (!str) return 0;
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                hash = (hash * 31 + str.charCodeAt(i)) | 0; // 强制转换为 32 位整数
+            }
+            hash = Math.abs(hash);
+            if (hash < 0) {
+                hash = 0;
+            }
+            return hash;
+        }
+
+        // --- 3. 核心计算和 DOM 更新逻辑 ---
+
+        function calculateRoute() {
+            const tradeNo = document.getElementById('tradeNoInput').value || '';
+            
+            if (tradeNo.length === 0) {
+                document.querySelectorAll('.card-content strong').forEach(el => el.textContent = '---');
+                return;
+            }
+            
+            const getLastN = (n) => parseInt(tradeNo.slice(-n) || '0', 10);
+
+            const getDBAndTable = (modVal, dbCount, tableCount) => {
+                const totalMod = dbCount * tableCount;
+                const mod = modVal % totalMod;
+
+                const db = Math.floor(mod / tableCount); 
+                const table = mod % tableCount;
+                return { db, table };
+            };
+
+            // A. 金石交易
+            const gsLast5 = getLastN(5);
+            const gsRoute = getDBAndTable(gsLast5, 20, 200);
+            document.getElementById('gs-cluster').textContent = CLUSTER_NAMES[gsLast5 % 3];
+            document.getElementById('gs-db').textContent = gsRoute.db;
+            document.getElementById('gs-table').textContent = gsRoute.table;
+
+            // B. 商城交易 (旧单号)
+            const mallOldLast4 = getLastN(4);
+            const mallOldRoute = getDBAndTable(mallOldLast4, 20, 200);
+            document.getElementById('mall-old-db').textContent = mallOldRoute.db;
+            document.getElementById('mall-old-table').textContent = mallOldRoute.table;
+
+            // C. 商城交易 (新单号)
+            const mallNewLast5 = getLastN(5);
+            const mallNewRoute = getDBAndTable(mallNewLast5, 20, 200);
+            document.getElementById('mall-new-db').textContent = mallNewRoute.db;
+            document.getElementById('mall-new-table').textContent = mallNewRoute.table;
+
+            // D. 长城全渠道 (生产)
+            const ccProdLast5 = getLastN(5);
+            const ccProdRoute = getDBAndTable(ccProdLast5, 2, 200);
+            document.getElementById('cc-prod-db').textContent = ccProdRoute.db;
+            document.getElementById('cc-prod-table').textContent = ccProdRoute.table;
+            
+            // E. 长城全渠道退款 (生产)
+            const ccRefundHash = hashcode(tradeNo) % 10000;
+            const ccRefundProdRoute = getDBAndTable(ccRefundHash, 2, 200);
+            document.getElementById('cc-refund-prod-db').textContent = ccRefundProdRoute.db;
+            document.getElementById('cc-refund-prod-table').textContent = ccRefundProdRoute.table;
+
+            // F. 长城全渠道 (测试环境)
+            const ccTestRoute = getDBAndTable(ccProdLast5, 2, 2); 
+            document.getElementById('cc-test-db').textContent = ccTestRoute.db;
+            document.getElementById('cc-test-table').textContent = ccTestRoute.table;
+
+            // G. 长城全渠道退款 (测试环境)
+            const ccRefundTestRoute = getDBAndTable(ccRefundHash, 2, 2); 
+            document.getElementById('cc-refund-test-db').textContent = ccRefundTestRoute.db;
+            document.getElementById('cc-refund-test-table').textContent = ccRefundTestRoute.table;
+
+            // H. SuperTrade
+            const stHash = hashcodeByStr(tradeNo) % 100000;
+            const stRoute = getDBAndTable(stHash, 2, 200);
+            document.getElementById('st-db').textContent = stRoute.db;
+            document.getElementById('st-table').textContent = stRoute.table;
+
+            // I. 断点
+            const bpHash = hashcodeByStr(tradeNo);
+            const bpRoute = getDBAndTable(bpHash, 32, 200);
+            document.getElementById('bp-db').textContent = bpRoute.db;
+            document.getElementById('bp-table').textContent = bpRoute.table;
+        }
+
+        // 页面加载完成后立即执行一次计算，并监听输入
+        document.addEventListener('DOMContentLoaded', calculateRoute);
+    </script>
+</body> 
+</html>
