@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
+    meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>2025-2026年月度成本对比分析</title>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
@@ -11,13 +11,13 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: "Microsoft YaHei", sans-serif; background: #f5f7fa; padding: 20px; }
         
-        /* 标题永远置顶，不被覆盖 */
+        /* 标题 */
         .main-title {
             background: #f5f7fa;
             padding: 10px 0;
         }
 
-        /* 自由拖拽 + 自由缩放面板（可拖出窗口） */
+        /* 自由拖拽 + 缩放面板 —— ✅ 加了防飞出屏幕限制 */
         .draggable-panel {
             position: absolute;
             background: white;
@@ -31,8 +31,13 @@
             overflow: hidden;
             user-select: none;
             z-index: 10;
-            /* 面板从标题下方开始，不会遮挡标题 */
             top: 120px !important;
+
+            /* ✅ 核心修复：永远不会被拖出可视区域 */
+            left: 0 !important;
+            right: 0 !important;
+            max-width: 100% !important;
+            max-height: 70vh !important;
         }
         .draggable-panel .panel-header {
             cursor: move;
@@ -44,10 +49,8 @@
 </head>
 <body>
     <div class="relative min-h-[calc(100vh-100px)]">
-        <!-- 固定标题，不被覆盖 -->
         <h1 class="main-title text-2xl font-bold text-center text-gray-800 mb-6">2025-2026年月度成本对比分析</h1>
 
-        <!-- 自由布局面板 -->
         <div class="draggable-panel" id="panel1" style="left: 20px;">
             <h2 class="panel-header text-lg font-semibold text-gray-700">📝 JSON数据录入（修改后自动刷新）</h2>
             <textarea id="jsonInput" class="w-full h-[500px] p-2 border border-gray-300 rounded font-mono text-sm"></textarea>
@@ -65,6 +68,9 @@
     </div>
 
     <script>
+        // ✅ 强制清除错误缓存，让面板立刻回来
+        localStorage.removeItem("dashboard_layout_v2");
+
         const myChart = echarts.init(document.getElementById('mainChart'));
         const monthList = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
         
@@ -75,9 +81,7 @@
 
         let timer = null;
 
-        // ==============================================
-        // 本地存储：保存/读取面板位置大小
-        // ==============================================
+        // 本地存储
         const STORAGE_KEY = "dashboard_layout_v2";
         function saveLayout() {
             const data = {};
@@ -108,13 +112,16 @@
             myChart.resize();
         }
 
-        // ==============================================
-        // 拖拽 + 缩放（可拖出窗口，不遮挡标题）
-        // ==============================================
+        // ✅ 限制拖拽范围：面板永远不会飞出屏幕
         interact('.draggable-panel')
             .draggable({
                 inertia: true,
-                modifiers: [],
+                modifiers: [
+                    interact.modifiers.restrictRect({
+                        restriction: 'body',  // 限制在页面内
+                        endOnly: false
+                    })
+                ],
                 listeners: {
                     move(event) {
                         const target = event.target;
@@ -148,11 +155,8 @@
                 }
             });
 
-        // ==============================================
-        // 初始化：加载布局 + 自动刷新
-        // ==============================================
         window.onload = function() {
-            loadLayout(); // 读取上次布局
+            loadLayout();
             const inputEl = document.getElementById('jsonInput');
             inputEl.value = JSON.stringify(defaultData, null, 2);
             refreshChart();
@@ -163,7 +167,6 @@
             });
         };
 
-        // 自动刷新图表
         function refreshChart() {
             try {
                 const inputData = JSON.parse(document.getElementById('jsonInput').value);
@@ -171,13 +174,11 @@
                 const data2026 = inputData["2026"] || [];
                 if (data2025.length !== 12 || data2026.length !== 12) return;
                 
-                // ✅ 修复BUG：这里之前写错了变量名
                 renderChart(data2025, data2026);
                 renderTable(data2025, data2026);
             } catch (e) {}
         }
 
-        // 双Y轴图表
         function renderChart(data2025, data2026) {
             const ratioData = data2025.map((val, idx) => {
                 const c26 = data2026[idx];
@@ -206,7 +207,6 @@
             myChart.setOption(option);
         }
 
-        // 表格
         function renderTable(data2025, data2026) {
             let html = `<table class="w-full border-collapse text-sm"><thead><tr class="bg-gray-100"><th class="border p-2">月份</th><th class="border p-2">2025年</th><th class="border p-2">2026年</th><th class="border p-2">同比占比</th></tr></thead><tbody>`;
             monthList.forEach((m, i) => {
