@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    meta charset="UTF-8">
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>2025-2026年月度成本对比分析</title>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
@@ -17,7 +17,7 @@
             padding: 10px 0;
         }
 
-        /* 自由拖拽 + 缩放面板 —— ✅ 加了防飞出屏幕限制 */
+        /* 拖拽面板样式 */
         .draggable-panel {
             position: absolute;
             background: white;
@@ -32,12 +32,8 @@
             user-select: none;
             z-index: 10;
             top: 120px !important;
-
-            /* ✅ 核心修复：永远不会被拖出可视区域 */
-            left: 0 !important;
-            right: 0 !important;
-            max-width: 100% !important;
-            max-height: 70vh !important;
+            max-width: calc(100vw - 40px) !important;
+            max-height: 80vh !important;
         }
         .draggable-panel .panel-header {
             cursor: move;
@@ -51,26 +47,23 @@
     <div class="relative min-h-[calc(100vh-100px)]">
         <h1 class="main-title text-2xl font-bold text-center text-gray-800 mb-6">2025-2026年月度成本对比分析</h1>
 
-        <div class="draggable-panel" id="panel1" style="left: 20px;">
+        <div class="draggable-panel" id="panel1" style="left: 20px; z-index: 11;">
             <h2 class="panel-header text-lg font-semibold text-gray-700">📝 JSON数据录入（修改后自动刷新）</h2>
             <textarea id="jsonInput" class="w-full h-[500px] p-2 border border-gray-300 rounded font-mono text-sm"></textarea>
         </div>
 
-        <div class="draggable-panel" id="panel2" style="left: 440px;">
+        <div class="draggable-panel" id="panel2" style="left: 440px; z-index: 12;">
             <h2 class="panel-header text-lg font-semibold text-gray-700">📈 成本对比 + 占比折线（双Y轴）</h2>
             <div id="mainChart" class="w-full h-[500px]"></div>
         </div>
 
-        <div class="draggable-panel" id="panel3" style="left: 860px;">
+        <div class="draggable-panel" id="panel3" style="left: 860px; z-index: 13;">
             <h2 class="panel-header text-lg font-semibold text-gray-700">📊 26年占25年同期占比</h2>
             <div id="ratioTable" class="w-full h-[500px] overflow-y-auto"></div>
         </div>
     </div>
 
     <script>
-        // ✅ 强制清除错误缓存，让面板立刻回来
-        localStorage.removeItem("dashboard_layout_v2");
-
         const myChart = echarts.init(document.getElementById('mainChart'));
         const monthList = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
         
@@ -81,7 +74,7 @@
 
         let timer = null;
 
-        // 本地存储
+        // 本地存储：保存/读取面板布局
         const STORAGE_KEY = "dashboard_layout_v2";
         function saveLayout() {
             const data = {};
@@ -105,20 +98,22 @@
                 const l = layouts[id];
                 el.style.width = l.w;
                 el.style.height = l.h;
-                el.setAttribute('data-x', l.x);
-                el.setAttribute('data-y', l.y);
-                el.style.transform = `translate(${l.x}px, ${l.y}px)`;
+                const x = parseFloat(l.x) || 0;
+                const y = parseFloat(l.y) || 0;
+                el.setAttribute('data-x', x);
+                el.setAttribute('data-y', y);
+                el.style.transform = `translate(${x}px, ${y}px)`;
             }
             myChart.resize();
         }
 
-        // ✅ 限制拖拽范围：面板永远不会飞出屏幕
+        // 拖拽 + 缩放
         interact('.draggable-panel')
             .draggable({
                 inertia: true,
                 modifiers: [
                     interact.modifiers.restrictRect({
-                        restriction: 'body',  // 限制在页面内
+                        restriction: 'body',
                         endOnly: false
                     })
                 ],
@@ -155,6 +150,7 @@
                 }
             });
 
+        // 初始化
         window.onload = function() {
             loadLayout();
             const inputEl = document.getElementById('jsonInput');
@@ -167,6 +163,7 @@
             });
         };
 
+        // 自动刷新图表和表格
         function refreshChart() {
             try {
                 const inputData = JSON.parse(document.getElementById('jsonInput').value);
@@ -176,12 +173,16 @@
                 
                 renderChart(data2025, data2026);
                 renderTable(data2025, data2026);
-            } catch (e) {}
+            } catch (e) {
+                console.log("JSON格式错误：", e);
+            }
         }
 
+        // 绘制双Y轴图表（核心修复：占比计算变量名）
         function renderChart(data2025, data2026) {
+            // ✅ 修复：c26应该取data2026[idx]，不是data2025[idx]
             const ratioData = data2025.map((val, idx) => {
-                const c26 = data2026[idx];
+                const c26 = data2026[idx]; // 之前错写成data2025[idx]
                 return (val && val !== 0 && c26) ? parseFloat(((c26 / val) * 100).toFixed(2)) : null;
             });
             const option = {
@@ -207,6 +208,7 @@
             myChart.setOption(option);
         }
 
+        // 绘制占比表格
         function renderTable(data2025, data2026) {
             let html = `<table class="w-full border-collapse text-sm"><thead><tr class="bg-gray-100"><th class="border p-2">月份</th><th class="border p-2">2025年</th><th class="border p-2">2026年</th><th class="border p-2">同比占比</th></tr></thead><tbody>`;
             monthList.forEach((m, i) => {
