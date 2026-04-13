@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>日维度成本/用量折线分析</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/interactjs/dist/interact.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: "Microsoft YaHei", sans-serif; 
+            background: #f5f7fa; 
+            padding: 10px;
+            overflow-x: hidden;
+            height: 100vh;
+            margin: 0;
+            transition: background 0.3s ease;
+        }
+
+        /* 暗黑模式基础样式 */
+        body.dark {
+            background: #1e1e2f;
+            color: #e5e7eb;
+        }
+        
+        /* 标题区域 */
+        .title-container {
+            position: relative;
+            background: #f5f7fa;
+            padding: 5px 0;
+            margin-bottom: 10px;
+            height: 40px;
+            transition: background 0.3s ease;
+        }
+
+        body.dark .title-container {
+            background: #1e1e2f;
+        }
+
+        .main-title {
+            font-size: 20px;
+            font-weight: 600;
+            text-align: center;
+            color: #333;
+            margin: 0;
+            line-height: 40px;
+            transition: color 0.3s ease;
+        }
+
+        body.dark .main-title {
+            color: #e5e7eb;
+        }
+
+        /* 按钮容器 */
+        .btn-container {
+            position: absolute;
+            top: 50%;
+            right: 10px;
+            transform: translateY(-50%);
+            display: flex;
+            gap: 8px;
+        }
+
+        /* 重置布局按钮 */
+        .reset-btn {
+            padding: 4px 10px;
+            background: #1677ff;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: background 0.2s;
+        }
+
+        .reset-btn:hover {
+            background: #0f62d9;
+        }
+
+        body.dark .reset-btn {
+            background: #2563eb;
+        }
+
+        body.dark .reset-btn:hover {
+            background: #1d4ed8;
+        }
+
+        /* 暗黑模式切换按钮 */
+        .theme-toggle-btn {
+            padding: 4px 10px;
+            background: #666;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: background 0.2s;
+        }
+
+        .theme-toggle-btn:hover {
+            background: #444;
+        }
+
+        body.dark .theme-toggle-btn {
+            background: #374151;
+        }
+
+        body.dark .theme-toggle-btn:hover {
+            background: #1f2937;
+        }
+
+        /* 拖拽面板样式 */
+        .draggable-panel {
+            position: absolute;
+            background: white;
+            padding: 0.8rem;
+            border-radius: 4px;
+            box-shadow: 0 1px 6px rgba(0,0,0,0.08);
+            min-width: 300px;
+            resize: both;
+            overflow: hidden;
+            user-select: none;
+            z-index: 10;
+            border: 1px solid #e8e8e8;
+            transition: all 0.3s ease;
+        }
+
+        body.dark .draggable-panel {
+            background: #2d2d42;
+            border: 1px solid #444;
+            box-shadow: 0 1px 6px rgba(0,0,0,0.3);
+        }
+
+        .draggable-panel .panel-header {
+            cursor: move;
+            padding: 0.3rem 0;
+            margin-bottom: 0.5rem;
+            user-select: none;
+            font-size: 14px;
+            color: #555;
+            font-weight: 600;
+            transition: color 0.3s ease;
+        }
+
+        body.dark .draggable-panel .panel-header {
+            color: #d1d5db;
+        }
+
+        /* 文本域样式适配 */
+        #jsonInput {
+            transition: all 0.3s ease;
+            white-space: pre;
+            font-family: monospace;
+        }
+
+        body.dark #jsonInput {
+            background: #373750;
+            color: #e5e7eb;
+            border-color: #444;
+        }
+    </style>
+</head>
+<body>
+    <div class="relative min-h-[calc(100vh-20px)]" id="panelContainer">
+        <!-- 标题容器 -->
+        <div class="title-container">
+            <h1 class="main-title">日维度成本/用量折线分析（3月30日起）</h1>
+            <!-- 按钮容器 -->
+            <div class="btn-container">
+                <button class="theme-toggle-btn" id="themeToggleBtn">切换暗黑模式</button>
+                <button class="reset-btn" id="resetLayoutBtn">重置布局</button>
+            </div>
+        </div>
+
+        <!-- 折线图面板（占视口70%高度） -->
+        <div class="draggable-panel" id="chartPanel" style="left: 10px; top: 50px; z-index: 12; width: calc(100vw - 20px); height: calc(70vh - 60px);">
+            <h2 class="panel-header">📈 日维度用量折线图</h2>
+            <div id="mainChart" class="w-full h-[calc(100%-30px)]"></div>
+        </div>
+
+        <!-- JSON数据录入面板（占视口30%高度） -->
+        <div class="draggable-panel" id="jsonPanel" style="left: 10px; top: calc(70vh); z-index: 11; width: calc(100vw - 20px); height: calc(30vh - 20px);">
+            <h2 class="panel-header">📝 用量数据录入（每行一个数字，修改后自动刷新）</h2>
+            <textarea id="jsonInput" class="w-full h-[calc(100%-30px)] p-2 border border-gray-200 rounded font-mono text-sm"></textarea>
+        </div>
+    </div>
+
+    <script>
+        const myChart = echarts.init(document.getElementById('mainChart'));
+        // 生成从3月30日开始的日期列表
+        function generateDateLabels(startDate, count) {
+            const labels = [];
+            const date = new Date(startDate);
+            for (let i = 0; i < count; i++) {
+                const month = date.getMonth() + 1;
+                const day = date.getDate();
+                labels.push(`${month}月${day}日`);
+                date.setDate(date.getDate() + 1);
+            }
+            return labels;
+        }
+
+        // 默认数据（你提供的示例数据）
+        const defaultData = `20442
+20629
+19180
+18713
+18466
+18382
+18382
+18373
+18466
+18549
+18532
+18526
+18344
+18306`;
+
+        let timer = null;
+        // 存储当前主题状态
+        let isDarkTheme = localStorage.getItem('darkTheme') === 'true' || false;
+
+        // 初始化主题
+        function initTheme() {
+            if (isDarkTheme) {
+                document.body.classList.add('dark');
+                document.getElementById('themeToggleBtn').textContent = '切换浅色模式';
+            } else {
+                document.body.classList.remove('dark');
+                document.getElementById('themeToggleBtn').textContent = '切换暗黑模式';
+            }
+            // 刷新图表适配主题
+            refreshChart();
+        }
+
+        // 切换主题
+        function toggleTheme() {
+            isDarkTheme = !isDarkTheme;
+            localStorage.setItem('darkTheme', isDarkTheme);
+            initTheme();
+        }
+
+        // 本地存储：保存/读取面板布局
+        const STORAGE_KEY = "daily_cost_dashboard_layout";
+        function saveLayout() {
+            const data = {};
+            document.querySelectorAll('.draggable-panel').forEach(el => {
+                data[el.id] = {
+                    x: el.getAttribute('data-x') || 0,
+                    y: el.getAttribute('data-y') || 0,
+                    w: el.style.width,
+                    h: el.style.height
+                };
+            });
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        }
+        function loadLayout() {
+            const data = localStorage.getItem(STORAGE_KEY);
+            if(!data) return;
+            const layouts = JSON.parse(data);
+            for(const id in layouts) {
+                const el = document.getElementById(id);
+                if(!el) continue;
+                const l = layouts[id];
+                el.style.width = l.w;
+                el.style.height = l.h;
+                const x = parseFloat(l.x) || 0;
+                const y = parseFloat(l.y) || 0;
+                el.setAttribute('data-x', x);
+                el.setAttribute('data-y', y);
+                el.style.transform = `translate(${x}px, ${y}px)`;
+            }
+            myChart.resize();
+        }
+
+        // 重置布局函数
+        function resetLayout() {
+            localStorage.removeItem(STORAGE_KEY);
+            const viewportHeight = window.innerHeight;
+            const chartPanelHeight = `calc(70vh - 60px)`;
+            const jsonPanelHeight = `calc(30vh - 20px)`;
+            
+            const panels = {
+                chartPanel: { 
+                    left: '10px', 
+                    top: '50px', 
+                    width: `calc(100vw - 20px)`, 
+                    height: chartPanelHeight, 
+                    zIndex:12 
+                },
+                jsonPanel: { 
+                    left: '10px', 
+                    top: `calc(70vh)`, 
+                    width: `calc(100vw - 20px)`, 
+                    height: jsonPanelHeight, 
+                    zIndex:11 
+                }
+            };
+            
+            for(const id in panels) {
+                const el = document.getElementById(id);
+                if(el) {
+                    el.style.left = panels[id].left;
+                    el.style.top = panels[id].top;
+                    el.style.width = panels[id].width;
+                    el.style.height = panels[id].height;
+                    el.style.zIndex = panels[id].zIndex;
+                    el.removeAttribute('data-x');
+                    el.removeAttribute('data-y');
+                    el.style.transform = 'translate(0px, 0px)';
+                }
+            }
+            myChart.resize();
+            alert('布局已重置为默认状态！');
+        }
+
+        // 拖拽 + 缩放
+        interact('.draggable-panel')
+            .draggable({
+                inertia: true,
+                modifiers: [
+                    interact.modifiers.restrictRect({
+                        restriction: 'body',
+                        endOnly: false
+                    })
+                ],
+                listeners: {
+                    move(event) {
+                        const target = event.target;
+                        const x = (parseFloat(target.getAttribute('data-x')) || 0) + event.dx;
+                        const y = (parseFloat(target.getAttribute('data-y')) || 0) + event.dy;
+                        target.style.transform = `translate(${x}px, ${y}px)`;
+                        target.setAttribute('data-x', x);
+                        target.setAttribute('data-y', y);
+                        myChart.resize();
+                    },
+                    end: saveLayout
+                }
+            })
+            .resizable({
+                edges: { left: true, right: true, bottom: true, top: true },
+                listeners: {
+                    move(event) {
+                        const target = event.target;
+                        let x = (parseFloat(target.getAttribute('data-x')) || 0);
+                        let y = (parseFloat(target.getAttribute('data-y')) || 0);
+                        target.style.width = event.rect.width + 'px';
+                        target.style.height = event.rect.height + 'px';
+                        x += event.deltaRect.left;
+                        y += event.deltaRect.top;
+                        target.style.transform = `translate(${x}px, ${y}px)`;
+                        target.setAttribute('data-x', x);
+                        target.setAttribute('data-y', y);
+                        myChart.resize();
+                    },
+                    end: saveLayout
+                }
+            });
+
+        // 初始化
+        window.onload = function() {
+            // 初始化主题
+            initTheme();
+            // 绑定主题切换事件
+            document.getElementById('themeToggleBtn').addEventListener('click', toggleTheme);
+            
+            loadLayout();
+            const inputEl = document.getElementById('jsonInput');
+            inputEl.value = defaultData;
+            refreshChart();
+
+            document.getElementById('resetLayoutBtn').addEventListener('click', resetLayout);
+
+            inputEl.addEventListener('input', function() {
+                clearTimeout(timer);
+                timer = setTimeout(() => refreshChart(), 300);
+            });
+        };
+
+        // 解析文本域数据（每行一个数字）
+        function parseInputData(text) {
+            // 按行分割，过滤空行，转换为数字
+            return text.split('\n')
+                .map(line => line.trim())
+                .filter(line => line !== '' && !isNaN(parseFloat(line)))
+                .map(num => parseFloat(num));
+        }
+
+        // 自动刷新图表
+        function refreshChart() {
+            try {
+                const inputText = document.getElementById('jsonInput').value;
+                const usageData = parseInputData(inputText);
+                
+                // 生成从3月30日开始的日期标签
+                const dateLabels = generateDateLabels('2025-03-30', usageData.length);
+                
+                renderChart(usageData, dateLabels);
+            } catch (e) {
+                console.log("数据解析错误：", e);
+            }
+        }
+
+        // 绘制日维度折线图
+        function renderChart(usageData, dateLabels) {
+            // 计算数据极值，优化Y轴刻度
+            const validData = usageData.filter(val => val !== null && val !== undefined);
+            const maxVal = validData.length > 0 ? Math.max(...validData) : 21000;
+            const minVal = validData.length > 0 ? Math.min(...validData) : 18000;
+            
+            // 扩展Y轴范围，让图表更美观
+            const yMax = Math.ceil(maxVal / 100) * 100 + 500;
+            const yMin = Math.floor(minVal / 100) * 100 - 500;
+
+            // 根据主题设置图表颜色
+            const themeColors = isDarkTheme ? {
+                text: '#e5e7eb',
+                axisLine: '#444',
+                splitLine: '#373750',
+                legendBg: 'rgba(45,45,66,0.8)',
+                tooltipBg: 'rgba(45,45,66,0.95)',
+                tooltipBorder: '#444',
+                chartBg: 'transparent',
+                lineColor: '#36cbcb'
+            } : {
+                text: '#333',
+                axisLine: '#dcdfe6',
+                splitLine: '#f5f7fa',
+                legendBg: 'rgba(248,250,252,0.8)',
+                tooltipBg: 'rgba(255,255,255,0.95)',
+                tooltipBorder: '#e8e8e8',
+                chartBg: 'transparent',
+                lineColor: '#1677ff'
+            };
+
+            const option = {
+                // 全局样式优化
+                textStyle: {
+                    fontFamily: "Microsoft YaHei",
+                    color: themeColors.text
+                },
+                // 提示框美化
+                tooltip: {
+                    trigger: 'axis',
+                    formatter: params => {
+                        return `${params[0].name}<br/>
+                            <span style="color:${themeColors.lineColor};">●</span> 用量：${params[0].value}`;
+                    },
+                    backgroundColor: themeColors.tooltipBg,
+                    borderColor: themeColors.tooltipBorder,
+                    borderWidth: 1,
+                    padding: 10,
+                    textStyle: {
+                        fontSize: 12,
+                        color: themeColors.text
+                    },
+                    shadowBlur: 5,
+                    shadowColor: isDarkTheme ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.1)'
+                },
+                // 图例
+                legend: { 
+                    data: ['日用量'], 
+                    top: 10, 
+                    fontSize: 13,
+                    left: 'center',
+                    itemWidth: 15,
+                    itemHeight: 8,
+                    itemGap: 20,
+                    backgroundColor: themeColors.legendBg,
+                    padding: [5, 15],
+                    textStyle: {
+                        color: themeColors.text
+                    }
+                },
+                // X轴（日期）
+                xAxis: { 
+                    type: 'category', 
+                    data: dateLabels, 
+                    axisLabel: { 
+                        fontSize: 12,
+                        color: themeColors.text,
+                        margin: 10,
+                        // 日期标签旋转，避免重叠
+                        rotate: 30
+                    },
+                    axisLine: { 
+                        lineStyle: { 
+                            color: themeColors.axisLine,
+                            width: 1
+                        } 
+                    },
+                    axisTick: { 
+                        show: true,
+                        lineStyle: {
+                            color: themeColors.axisLine,
+                            width: 1
+                        },
+                        alignWithLabel: true
+                    },
+                    splitLine: {
+                        show: false
+                    }
+                },
+                // Y轴（用量）
+                yAxis: [
+                    { 
+                        type: 'value', 
+                        name: '用量', 
+                        position: 'left', 
+                        nameTextStyle: {
+                            fontSize: 12,
+                            color: themeColors.text,
+                            padding: [0, 0, 0, 10]
+                        },
+                        axisLabel: { 
+                            fontSize: 12,
+                            color: themeColors.text,
+                            margin: 8,
+                            formatter: '{value}'
+                        },
+                        min: yMin,
+                        max: yMax,
+                        splitNumber: 8,
+                        // 网格线优化
+                        splitLine: {
+                            show: true,
+                            lineStyle: { 
+                                color: themeColors.splitLine,
+                                width: 1,
+                                type: 'solid'
+                            }
+                        },
+                        axisLine: { 
+                            lineStyle: { 
+                                color: themeColors.axisLine,
+                                width: 1
+                            } 
+                        },
+                        axisTick: { 
+                            show: true,
+                            lineStyle: {
+                                color: themeColors.axisLine,
+                                width: 1
+                            }
+                        }
+                    }
+                ],
+                // 折线图系列
+                series: [
+                    { 
+                        name: '日用量', 
+                        type: 'line', 
+                        yAxisIndex: 0, 
+                        data: usageData, 
+                        smooth: true, 
+                        color: themeColors.lineColor, 
+                        lineStyle: {
+                            width: 2.5,
+                            opacity: 0.9
+                        },
+                        symbol: 'circle',
+                        symbolSize: 6,
+                        itemStyle: { 
+                            color: themeColors.lineColor,
+                            borderColor: isDarkTheme ? '#444' : '#fff',
+                            borderWidth: 1.5
+                        },
+                        emphasis: {
+                            symbolSize: 9,
+                            itemStyle: {
+                                shadowBlur: 5,
+                                shadowColor: `${themeColors.lineColor}80`
+                            }
+                        },
+                        // 填充区域，增强视觉效果
+                        areaStyle: {
+                            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                                { offset: 0, color: `${themeColors.lineColor}30` },
+                                { offset: 1, color: `${themeColors.lineColor}00` }
+                            ])
+                        }
+                    }
+                ],
+                // 图表内边距优化
+                grid: { 
+                    top: 60, 
+                    left: 70, 
+                    right: 40, 
+                    bottom: 60,
+                    containLabel: true
+                },
+                // 背景色优化
+                backgroundColor: themeColors.chartBg,
+                // 动画效果
+                animationDuration: 1000,
+                animationEasing: 'cubicOut'
+            };
+            myChart.setOption(option);
+        }
+
+        // 窗口缩放时刷新图表和布局
+        window.addEventListener('resize', () => {
+            myChart.resize();
+            // 若未手动调整布局，窗口缩放时保持比例
+            if(!localStorage.getItem(STORAGE_KEY)) {
+                const chartPanelHeight = `calc(70vh - 60px)`;
+                const jsonPanelHeight = `calc(30vh - 20px)`;
+                
+                document.getElementById('chartPanel').style.width = `calc(100vw - 20px)`;
+                document.getElementById('chartPanel').style.height = chartPanelHeight;
+                document.getElementById('jsonPanel').style.top = `calc(70vh)`;
+                document.getElementById('jsonPanel').style.width = `calc(100vw - 20px)`;
+                document.getElementById('jsonPanel').style.height = jsonPanelHeight;
+            }
+        });
+    </script>
+</body>
+</html>
