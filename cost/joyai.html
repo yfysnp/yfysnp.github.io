@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>成本分析看板</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://code.jquery.com/ui/1.13.2/jquery-ui.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        .dashboard {
+            display: grid;
+            grid-template-areas:
+                "chart table"
+                "json json";
+            grid-template-rows: 60vh 35vh;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            height: 95vh;
+        }
+        .panel {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 15px;
+            background: white;
+            position: relative;
+        }
+        .chart-panel { grid-area: chart; }
+        .table-panel { grid-area: table; }
+        .json-panel { grid-area: json; }
+        .resizable { overflow: hidden; }
+        .chart-container { height: calc(100% - 40px); }
+        .legend-container {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 10px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            padding: 5px 10px;
+        }
+        .legend-color {
+            width: 20px;
+            height: 2px;
+            margin-right: 5px;
+        }
+        #resetLayout {
+            position: fixed;
+            top: 25px;
+            right: 25px;
+            z-index: 1000;
+            padding: 5px 10px;
+            background: #f0f0f0;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: center;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        textarea {
+            width: 100%;
+            height: 85%;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <button id="resetLayout">重置布局</button>
+    <div class="dashboard">
+        <div class="panel chart-panel resizable">
+            <h3>成本对比 + 占比</h3>
+            <div class="chart-container">
+                <canvas id="costChart"></canvas>
+            </div>
+            <div class="legend-container">
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #1e88e5;"></div>
+                    <span>25年成本</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #ffa726;"></div>
+                    <span>26年成本</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #4caf50;"></div>
+                    <span>占比(%)</span>
+                </div>
+            </div>
+        </div>
+        <div class="panel table-panel resizable">
+            <h3>26年占25年同期占比表格</h3>
+            <div style="overflow: auto; height: 90%">
+                <table id="comparisonTable">
+                    <thead>
+                        <tr>
+                            <th>月份</th>
+                            <th>2025年</th>
+                            <th>2026年</th>
+                            <th>同比占比</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="panel json-panel resizable">
+            <h3>JSON数据录入</h3>
+            <textarea id="jsonInput" placeholder='输入JSON数据，例如：{ "2025": [2304670.49, ...], "2026": [...] }'></textarea>
+        </div>
+    </div>
+
+    <script>
+        // 初始化布局
+        $(function() {
+            $(".resizable").resizable({
+                alsoResize: true,
+                containment: "parent"
+            }).draggable({
+                containment: "parent",
+                handle: "h3",
+                stack: ".panel"
+            });
+
+            // 保存布局
+            function saveLayout() {
+                const layout = [];
+                $(".panel").each(function() {
+                    layout.push({
+                        id: $(this).attr("class").split(" ")[1],
+                        top: $(this).css("top"),
+                        left: $(this).css("left"),
+                        width: $(this).css("width"),
+                        height: $(this).css("height")
+                    });
+                });
+                localStorage.setItem("dashboardLayout", JSON.stringify(layout));
+            }
+
+            // 加载布局
+            function loadLayout() {
+                const savedLayout = localStorage.getItem("dashboardLayout");
+                if (savedLayout) {
+                    JSON.parse(savedLayout).forEach(item => {
+                        const $panel = $(`.${item.id}`);
+                        $panel.css({
+                            position: "absolute",
+                            top: item.top,
+                            left: item.left,
+                            width: item.width,
+                            height: item.height
+                        });
+                    });
+                }
+            }
+
+            // 重置布局
+            $("#resetLayout").click(function() {
+                localStorage.removeItem("dashboardLayout");
+                $(".panel").each(function() {
+                    $(this).css({
+                        position: "relative",
+                        top: "",
+                        left: "",
+                        width: "",
+                        height: ""
+                    });
+                });
+                $(".dashboard").css("display", "grid");
+                setTimeout(() => location.reload(), 100);
+            });
+
+            // 初始化布局
+            loadLayout();
+            setInterval(saveLayout, 1000);
+        });
+
+        // 初始化图表
+        const ctx = document.getElementById('costChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'],
+                datasets: [{
+                    label: '25年成本',
+                    data: [],
+                    borderColor: '#1e88e5',
+                    yAxisID: 'y',
+                    tension: 0.1
+                }, {
+                    label: '26年成本',
+                    data: [],
+                    borderColor: '#ffa726',
+                    yAxisID: 'y',
+                    tension: 0.1
+                }, {
+                    label: '占比(%)',
+                    data: [],
+                    borderColor: '#4caf50',
+                    yAxisID: 'y1',
+                    tension: 0.1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false,
+                },
+                scales: {
+                    y: {
+                        type: 'linear',
+                        display: true,
+                        position: 'left',
+                        title: {
+                            display: true,
+                            text: '成本 (元)'
+                        }
+                    },
+                    y1: {
+                        type: 'linear',
+                        display: true,
+                        position: 'right',
+                        title: {
+                            display: true,
+                            text: '占比 (%)'
+                        },
+                        grid: {
+                            drawOnChartArea: false
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return `${context.dataset.label}: ${context.parsed.y.toLocaleString()}` + 
+                                    (context.dataset.label === '占比(%)' ? '%' : '元');
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // 初始化表格
+        function updateTable(data2025, data2026) {
+            const tbody = document.querySelector('#comparisonTable tbody');
+            tbody.innerHTML = '';
+            data2025.forEach((value, index) => {
+                const row = document.createElement('tr');
+                const ratio = data2026[index] ? (data2026[index] / value * 100).toFixed(2) : 0;
+                row.innerHTML = `
+                    <td>${index+1}月</td>
+                    <td>${value.toLocaleString()}</td>
+                    <td>${data2026[index]?.toLocaleString() || '-'}</td>
+                    <td>${ratio}%</td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        // JSON数据处理
+        document.getElementById('jsonInput').addEventListener('input', function(e) {
+            try {
+                const data = JSON.parse(e.target.value);
+                if (data['2025'] && data['2026']) {
+                    chart.data.datasets[0].data = data['2025'];
+                    chart.data.datasets[1].data = data['2026'];
+                    chart.data.datasets[2].data = data['2025'].map((v, i) => 
+                        data['2026'][i] ? (data['2026'][i] / v * 100) : 0
+                    );
+                    chart.update();
+                    updateTable(data['2025'], data['2026']);
+                }
+            } catch (error) {
+                console.error('JSON解析错误:', error);
+            }
+        });
+
+        // 初始化示例数据
+        const initialData = {
+            "2025": [2304670.49,2093682.25,2058184,2871679.92,4044585.04,3633284.42,2309572.78,2308662.43,3575716.07,4282045.31,3276700.22,2694166.28],
+            "2026": [2846193.48,2753144.68,2769000.94,2871679.92,4044585.04,3633284.42,2309572.78,2308662.43,3575716.07,4282045.31,3276700.22,2694166.28]
+        };
+        document.getElementById('jsonInput').value = JSON.stringify(initialData, null, 2);
+        document.getElementById('jsonInput').dispatchEvent(new Event('input'));
+    </script>
+</body>
+</html>
