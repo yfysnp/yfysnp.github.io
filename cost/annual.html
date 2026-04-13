@@ -9,80 +9,98 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: "Microsoft YaHei", sans-serif; background: #f5f7fa; padding: 20px; }
+        body { 
+            font-family: "Microsoft YaHei", sans-serif; 
+            background: #f5f7fa; 
+            padding: 10px; /* 缩小整体内边距，更紧凑 */
+            overflow-x: hidden; /* 防止横向滚动 */
+            height: 100vh; /* 确保body占满视口高度 */
+            margin: 0;
+        }
         
-        /* 标题区域：新增相对定位，用于放置重置按钮 */
+        /* 标题区域：适配截图的标题样式 */
         .title-container {
             position: relative;
             background: #f5f7fa;
-            padding: 10px 0;
+            padding: 5px 0;
+            margin-bottom: 10px;
+            height: 40px; /* 固定标题高度，避免影响比例 */
         }
-        /* 重置布局按钮样式 */
+        .main-title {
+            font-size: 20px; /* 缩小标题字号，贴合截图 */
+            font-weight: 600;
+            text-align: center;
+            color: #333;
+            margin: 0;
+            line-height: 40px; /* 垂直居中 */
+        }
+        /* 重置布局按钮：贴合截图右上角样式 */
         .reset-btn {
             position: absolute;
             top: 50%;
-            right: 20px;
+            right: 10px;
             transform: translateY(-50%);
-            padding: 6px 12px;
+            padding: 4px 10px;
             background: #1677ff;
             color: white;
             border: none;
-            border-radius: 4px;
+            border-radius: 3px;
             cursor: pointer;
-            font-size: 14px;
+            font-size: 12px;
             transition: background 0.2s;
         }
         .reset-btn:hover {
             background: #0f62d9;
         }
 
-        /* 拖拽面板样式 */
+        /* 拖拽面板样式：贴合截图的视觉效果 */
         .draggable-panel {
             position: absolute;
             background: white;
-            padding: 1rem;
-            border-radius: 0.5rem;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            min-width: 350px;
-            min-height: 550px;
-            width: 400px;
+            padding: 0.8rem; /* 缩小内边距 */
+            border-radius: 4px; /* 更小的圆角，贴合截图 */
+            box-shadow: 0 1px 6px rgba(0,0,0,0.08); /* 更淡的阴影 */
+            min-width: 300px;
             resize: both;
             overflow: hidden;
             user-select: none;
             z-index: 10;
-            top: 120px !important;
-            max-width: calc(100vw - 40px) !important;
-            max-height: 80vh !important;
+            border: 1px solid #e8e8e8; /* 新增边框，贴合截图 */
         }
         .draggable-panel .panel-header {
             cursor: move;
-            padding: 0.5rem 0;
-            margin-bottom: 0.75rem;
+            padding: 0.3rem 0;
+            margin-bottom: 0.5rem;
             user-select: none;
+            font-size: 14px; /* 缩小面板标题字号 */
+            color: #555;
+            font-weight: 600;
         }
     </style>
 </head>
 <body>
-    <div class="relative min-h-[calc(100vh-100px)]">
-        <!-- 标题容器：新增重置按钮 -->
+    <div class="relative min-h-[calc(100vh-20px)]" id="panelContainer">
+        <!-- 标题容器 -->
         <div class="title-container">
-            <h1 class="main-title text-2xl font-bold text-center text-gray-800 mb-6">2025-2026年月度成本对比分析</h1>
-            <button class="reset-btn" id="resetLayoutBtn">🔄 重置布局</button>
+            <h1 class="main-title">2025-2026年月度成本对比分析</h1>
+            <button class="reset-btn" id="resetLayoutBtn">重置布局</button>
         </div>
 
-        <div class="draggable-panel" id="panel1" style="left: 20px; z-index: 11;">
-            <h2 class="panel-header text-lg font-semibold text-gray-700">📝 JSON数据录入（修改后自动刷新）</h2>
-            <textarea id="jsonInput" class="w-full h-[500px] p-2 border border-gray-300 rounded font-mono text-sm"></textarea>
+        <!-- 上半部分：图表+表格并列（占视口70%高度） -->
+        <div class="draggable-panel" id="panel2" style="left: 10px; top: 50px; z-index: 12; width: calc(50vw - 15px); height: calc(70vh - 60px);">
+            <h2 class="panel-header">📈 成本对比 + 占比折线（双Y轴）</h2>
+            <div id="mainChart" class="w-full h-[calc(100%-30px)]"></div>
         </div>
 
-        <div class="draggable-panel" id="panel2" style="left: 440px; z-index: 12;">
-            <h2 class="panel-header text-lg font-semibold text-gray-700">📈 成本对比 + 占比折线（双Y轴）</h2>
-            <div id="mainChart" class="w-full h-[500px]"></div>
+        <div class="draggable-panel" id="panel3" style="left: calc(50vw + 5px); top: 50px; z-index: 13; width: calc(50vw - 15px); height: calc(70vh - 60px);">
+            <h2 class="panel-header">📊 26年占25年同期占比</h2>
+            <div id="ratioTable" class="w-full h-[calc(100%-30px)] overflow-y-auto"></div>
         </div>
 
-        <div class="draggable-panel" id="panel3" style="left: 860px; z-index: 13;">
-            <h2 class="panel-header text-lg font-semibold text-gray-700">📊 26年占25年同期占比</h2>
-            <div id="ratioTable" class="w-full h-[500px] overflow-y-auto"></div>
+        <!-- 下半部分：JSON面板（占视口30%高度） -->
+        <div class="draggable-panel" id="panel1" style="left: 10px; top: calc(70vh); z-index: 11; width: calc(100vw - 20px); height: calc(30vh - 20px);">
+            <h2 class="panel-header">📝 JSON数据录入（修改后自动刷新）</h2>
+            <textarea id="jsonInput" class="w-full h-[calc(100%-30px)] p-2 border border-gray-200 rounded font-mono text-sm"></textarea>
         </div>
     </div>
 
@@ -130,35 +148,56 @@
             myChart.resize();
         }
 
-        // 新增：重置布局函数
+        // 重置布局函数（适配30%/70%高度比例）
         function resetLayout() {
-            // 1. 清除本地存储的布局信息
             localStorage.removeItem(STORAGE_KEY);
-            // 2. 恢复每个面板的默认位置和大小
+            // 基于视口高度的30%/70%比例布局
+            const viewportHeight = window.innerHeight;
+            const topPanelHeight = `calc(70vh - 60px)`; // 70%视口高度 - 标题/间距
+            const bottomPanelHeight = `calc(30vh - 20px)`; // 30%视口高度 - 间距
+            
             const panels = {
-                panel1: { left: '20px', width: '400px', height: '550px' },
-                panel2: { left: '440px', width: '400px', height: '550px' },
-                panel3: { left: '860px', width: '400px', height: '550px' }
+                panel2: { 
+                    left: '10px', 
+                    top: '50px', 
+                    width: `calc(50vw - 15px)`, 
+                    height: topPanelHeight, 
+                    zIndex:12 
+                },
+                panel3: { 
+                    left: `calc(50vw + 5px)`, 
+                    top: '50px', 
+                    width: `calc(50vw - 15px)`, 
+                    height: topPanelHeight, 
+                    zIndex:13 
+                },
+                panel1: { 
+                    left: '10px', 
+                    top: `calc(70vh)`, 
+                    width: `calc(100vw - 20px)`, 
+                    height: bottomPanelHeight, 
+                    zIndex:11 
+                }
             };
-            // 遍历重置面板样式
+            
             for(const id in panels) {
                 const el = document.getElementById(id);
                 if(el) {
                     el.style.left = panels[id].left;
+                    el.style.top = panels[id].top;
                     el.style.width = panels[id].width;
                     el.style.height = panels[id].height;
+                    el.style.zIndex = panels[id].zIndex;
                     el.removeAttribute('data-x');
                     el.removeAttribute('data-y');
                     el.style.transform = 'translate(0px, 0px)';
                 }
             }
-            // 3. 刷新图表大小
             myChart.resize();
-            // 提示用户重置成功
             alert('布局已重置为默认状态！');
         }
 
-        // 拖拽 + 缩放
+        // 拖拽 + 缩放（保留原有交互）
         interact('.draggable-panel')
             .draggable({
                 inertia: true,
@@ -208,7 +247,6 @@
             inputEl.value = JSON.stringify(defaultData, null, 2);
             refreshChart();
 
-            // 绑定重置布局按钮点击事件
             document.getElementById('resetLayoutBtn').addEventListener('click', resetLayout);
 
             inputEl.addEventListener('input', function() {
@@ -232,11 +270,10 @@
             }
         }
 
-        // 绘制双Y轴图表（核心修复：占比计算变量名）
+        // 绘制双Y轴图表
         function renderChart(data2025, data2026) {
-            // ✅ 修复：c26应该取data2026[idx]，不是data2025[idx]
             const ratioData = data2025.map((val, idx) => {
-                const c26 = data2026[idx]; // 之前错写成data2025[idx]
+                const c26 = data2026[idx];
                 return (val && val !== 0 && c26) ? parseFloat(((c26 / val) * 100).toFixed(2)) : null;
             });
             const option = {
@@ -247,24 +284,31 @@
                         return `${params[0].name}<br/>2025年：${data2025[i]??"-"} 元<br/>2026年：${data2026[i]??"-"} 元<br/>占比：${ratioData[i]?ratioData[i]+"%":"-"}`;
                     }
                 },
-                legend: { data: ['2025年成本','2026年成本','26年占25年占比(%)'], top: 5 },
-                xAxis: { type: 'category', data: monthList },
+                legend: { data: ['2025年成本','2026年成本','26年占25年占比(%)'], top: 5, fontSize: 12 },
+                xAxis: { type: 'category', data: monthList, axisLabel: { fontSize: 11 } },
                 yAxis: [
-                    { type: 'value', name: '成本（元）', position: 'left' },
-                    { type: 'value', name: '占比（%）', position: 'right' }
+                    { type: 'value', name: '成本（元）', position: 'left', axisLabel: { fontSize: 11 } },
+                    { type: 'value', name: '占比（%）', position: 'right', axisLabel: { fontSize: 11 } }
                 ],
                 series: [
-                    { name: '2025年成本', type: 'line', yAxisIndex:0, data: data2025, smooth:true, color:'#1677ff', lineStyle:{width:3} },
-                    { name: '2026年成本', type: 'line', yAxisIndex:0, data: data2026, smooth:true, color:'#36cbcb', lineStyle:{width:3} },
-                    { name: '26年占25年占比(%)', type: 'line', yAxisIndex:1, data: ratioData, smooth:true, color:'#ff7d00', lineStyle:{width:3}, symbol:'circle' }
-                ]
+                    { name: '2025年成本', type: 'line', yAxisIndex:0, data: data2025, smooth:true, color:'#1677ff', lineStyle:{width:2} },
+                    { name: '2026年成本', type: 'line', yAxisIndex:0, data: data2026, smooth:true, color:'#36cbcb', lineStyle:{width:2} },
+                    { name: '26年占25年占比(%)', type: 'line', yAxisIndex:1, data: ratioData, smooth:true, color:'#ff7d00', lineStyle:{width:2}, symbol:'circle' }
+                ],
+                grid: { top: 30, left: 40, right: 40, bottom: 30 } // 调整图表内边距，更紧凑
             };
             myChart.setOption(option);
         }
 
-        // 绘制占比表格
+        // 绘制占比表格（贴合截图样式）
         function renderTable(data2025, data2026) {
-            let html = `<table class="w-full border-collapse text-sm"><thead><tr class="bg-gray-100"><th class="border p-2">月份</th><th class="border p-2">2025年</th><th class="border p-2">2026年</th><th class="border p-2">同比占比</th></tr></thead><tbody>`;
+            let html = `<table class="w-full border-collapse text-sm"><thead><tr style="background:#f8f8f8;">
+                <th class="border border-gray-200 p-1 text-center" style="font-size:11px;">月份</th>
+                <th class="border border-gray-200 p-1 text-center" style="font-size:11px;">2025年</th>
+                <th class="border border-gray-200 p-1 text-center" style="font-size:11px;">2026年</th>
+                <th class="border border-gray-200 p-1 text-center" style="font-size:11px;">同比占比</th>
+            </tr></thead><tbody>`;
+            
             monthList.forEach((m, i) => {
                 const c25 = data2025[i], c26 = data2026[i];
                 let r = "-", cls = "text-gray-400";
@@ -272,13 +316,35 @@
                     const v = (c26/c25*100).toFixed(2);
                     r = v+"%"; cls = v>=100 ? "text-red-600 font-bold" : "text-green-600 font-bold";
                 }
-                html += `<tr class="text-center hover:bg-gray-50"><td class="border p-2">${m}</td><td class="border p-2">${c25??"-"}</td><td class="border p-2">${c26??"-"}</td><td class="border p-2 ${cls}">${r}</td></tr>`;
+                html += `<tr class="hover:bg-gray-50">
+                    <td class="border border-gray-200 p-1 text-center" style="font-size:11px;">${m}</td>
+                    <td class="border border-gray-200 p-1 text-center" style="font-size:11px;">${c25??"-"}</td>
+                    <td class="border border-gray-200 p-1 text-center" style="font-size:11px;">${c26??"-"}</td>
+                    <td class="border border-gray-200 p-1 text-center ${cls}" style="font-size:11px;">${r}</td>
+                </tr>`;
             });
             html += `</tbody></table>`;
             document.getElementById('ratioTable').innerHTML = html;
         }
 
-        window.addEventListener('resize', () => myChart.resize());
+        // 窗口缩放时刷新图表和布局
+        window.addEventListener('resize', () => {
+            myChart.resize();
+            // 若未手动调整布局，窗口缩放时保持30%/70%比例
+            if(!localStorage.getItem(STORAGE_KEY)) {
+                const topPanelHeight = `calc(70vh - 60px)`;
+                const bottomPanelHeight = `calc(30vh - 20px)`;
+                
+                document.getElementById('panel2').style.width = `calc(50vw - 15px)`;
+                document.getElementById('panel2').style.height = topPanelHeight;
+                document.getElementById('panel3').style.left = `calc(50vw + 5px)`;
+                document.getElementById('panel3').style.width = `calc(50vw - 15px)`;
+                document.getElementById('panel3').style.height = topPanelHeight;
+                document.getElementById('panel1').style.top = `calc(70vh)`;
+                document.getElementById('panel1').style.width = `calc(100vw - 20px)`;
+                document.getElementById('panel1').style.height = bottomPanelHeight;
+            }
+        });
     </script>
 </body>
 </html>
