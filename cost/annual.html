@@ -87,17 +87,20 @@
         </div>
 
         <!-- 上半部分：图表+表格并列（占视口70%高度） -->
+        <!-- 调整：左侧面板left保持10px，右侧面板left调整为calc(50vw + 10px)，宽度统一为calc(50vw - 15px) -->
         <div class="draggable-panel" id="panel2" style="left: 10px; top: 50px; z-index: 12; width: calc(50vw - 15px); height: calc(70vh - 60px);">
             <h2 class="panel-header">📈 成本对比 + 占比折线（双Y轴）</h2>
             <div id="mainChart" class="w-full h-[calc(100%-30px)]"></div>
         </div>
 
-        <div class="draggable-panel" id="panel3" style="left: calc(50vw + 5px); top: 50px; z-index: 13; width: calc(50vw - 15px); height: calc(70vh - 60px);">
+        <!-- 核心修改：右侧面板left从calc(50vw + 5px)改为calc(50vw + 10px)，确保右侧也有10px边距 -->
+        <div class="draggable-panel" id="panel3" style="left: calc(50vw + 10px); top: 50px; z-index: 13; width: calc(50vw - 15px); height: calc(70vh - 60px);">
             <h2 class="panel-header">📊 26年占25年同期占比</h2>
             <div id="ratioTable" class="w-full h-[calc(100%-30px)] overflow-y-auto"></div>
         </div>
 
         <!-- 下半部分：JSON面板（占视口30%高度） -->
+        <!-- 调整：右侧边距也改为10px，宽度从calc(100vw - 20px)改为calc(100vw - 20px)（保持一致） -->
         <div class="draggable-panel" id="panel1" style="left: 10px; top: calc(70vh); z-index: 11; width: calc(100vw - 20px); height: calc(30vh - 20px);">
             <h2 class="panel-header">📝 JSON数据录入（修改后自动刷新）</h2>
             <textarea id="jsonInput" class="w-full h-[calc(100%-30px)] p-2 border border-gray-200 rounded font-mono text-sm"></textarea>
@@ -164,8 +167,9 @@
                     height: topPanelHeight, 
                     zIndex:12 
                 },
+                // 核心修改：右侧面板left改为calc(50vw + 10px)，确保右侧边距10px
                 panel3: { 
-                    left: `calc(50vw + 5px)`, 
+                    left: `calc(50vw + 10px)`, 
                     top: '50px', 
                     width: `calc(50vw - 15px)`, 
                     height: topPanelHeight, 
@@ -270,57 +274,294 @@
             }
         }
 
-        // 绘制双Y轴图表
+        // 绘制双Y轴图表（修复XY轴起始值+美化样式）
         function renderChart(data2025, data2026) {
             const ratioData = data2025.map((val, idx) => {
                 const c26 = data2026[idx];
                 return (val && val !== 0 && c26) ? parseFloat(((c26 / val) * 100).toFixed(2)) : null;
             });
+
+            // 计算成本数据最大值，用于优化Y轴刻度分布（起始值固定为0）
+            const allCostData = [...data2025, ...data2026].filter(val => val !== null && val !== undefined);
+            const maxCost = allCostData.length > 0 ? Math.max(...allCostData) : 2000;
+            // 向上取整到最近的百位，让刻度更规整
+            const yMax = Math.ceil(maxCost / 100) * 100;
+
+            // 计算占比数据极值（起始值固定为0）
+            const validRatioData = ratioData.filter(val => val !== null && val !== undefined);
+            const ratioMax = validRatioData.length > 0 ? Math.max(...validRatioData) : 150;
+            // 向上取整，确保占比轴显示完整
+            const ratioCeil = Math.ceil(ratioMax / 10) * 10;
+
             const option = {
+                // 全局样式优化
+                textStyle: {
+                    fontFamily: "Microsoft YaHei",
+                    color: "#333"
+                },
+                // 提示框美化
                 tooltip: {
                     trigger: 'axis',
                     formatter: params => {
                         const i = params[0].dataIndex;
-                        return `${params[0].name}<br/>2025年：${data2025[i]??"-"} 元<br/>2026年：${data2026[i]??"-"} 元<br/>占比：${ratioData[i]?ratioData[i]+"%":"-"}`;
+                        return `${params[0].name}<br/>
+                            <span style="color:#1677ff;">●</span> 2025年：${data2025[i]??"-"} 元<br/>
+                            <span style="color:#36cbcb;">●</span> 2026年：${data2026[i]??"-"} 元<br/>
+                            <span style="color:#ff7d00;">●</span> 占比：${ratioData[i]?ratioData[i]+"%":"-"}`;
+                    },
+                    backgroundColor: 'rgba(255,255,255,0.95)',
+                    borderColor: '#e8e8e8',
+                    borderWidth: 1,
+                    padding: 10,
+                    textStyle: {
+                        fontSize: 12
+                    },
+                    shadowBlur: 5,
+                    shadowColor: 'rgba(0,0,0,0.1)'
+                },
+                // 图例美化
+                legend: { 
+                    data: ['2025年成本','2026年成本','26年占25年占比(%)'], 
+                    top: 10, 
+                    fontSize: 13,
+                    left: 'center',
+                    itemWidth: 15,
+                    itemHeight: 8,
+                    itemGap: 20,
+                    backgroundColor: 'rgba(248,250,252,0.8)',
+                    padding: [5, 15]
+                },
+                // X轴修复：显示刻度，起始值正常，样式美化
+                xAxis: { 
+                    type: 'category', 
+                    data: monthList, 
+                    axisLabel: { 
+                        fontSize: 12,
+                        color: '#666',
+                        margin: 10
+                    },
+                    axisLine: { 
+                        lineStyle: { 
+                            color: '#dcdfe6',
+                            width: 1
+                        } 
+                    },
+                    axisTick: { 
+                        show: true,
+                        lineStyle: {
+                            color: '#dcdfe6',
+                            width: 1
+                        },
+                        alignWithLabel: true
+                    },
+                    splitLine: {
+                        show: false
                     }
                 },
-                legend: { data: ['2025年成本','2026年成本','26年占25年占比(%)'], top: 5, fontSize: 12 },
-                xAxis: { type: 'category', data: monthList, axisLabel: { fontSize: 11 } },
+                // Y轴修复：起始值为0，恢复刻度，美化样式
                 yAxis: [
-                    { type: 'value', name: '成本（元）', position: 'left', axisLabel: { fontSize: 11 } },
-                    { type: 'value', name: '占比（%）', position: 'right', axisLabel: { fontSize: 11 } }
+                    { 
+                        type: 'value', 
+                        name: '成本（元）', 
+                        position: 'left', 
+                        nameTextStyle: {
+                            fontSize: 12,
+                            color: '#666',
+                            padding: [0, 0, 0, 10]
+                        },
+                        axisLabel: { 
+                            fontSize: 12,
+                            color: '#666',
+                            margin: 8,
+                            formatter: '{value}'
+                        },
+                        // 核心修复：起始值固定为0
+                        min: 0,
+                        max: yMax,
+                        // 优化刻度数量，让显示更合理
+                        splitNumber: 6,
+                        // 网格线优化
+                        splitLine: {
+                            show: true,
+                            lineStyle: { 
+                                color: '#f5f7fa',
+                                width: 1,
+                                type: 'solid' // 实线网格，更清晰
+                            }
+                        },
+                        // 恢复坐标轴和刻度样式
+                        axisLine: { 
+                            lineStyle: { 
+                                color: '#dcdfe6',
+                                width: 1
+                            } 
+                        },
+                        axisTick: { 
+                            show: true,
+                            lineStyle: {
+                                color: '#dcdfe6',
+                                width: 1
+                            }
+                        }
+                    },
+                    { 
+                        type: 'value', 
+                        name: '占比（%）', 
+                        position: 'right', 
+                        nameTextStyle: {
+                            fontSize: 12,
+                            color: '#666',
+                            padding: [0, 10, 0, 0]
+                        },
+                        axisLabel: { 
+                            fontSize: 12,
+                            color: '#666',
+                            margin: 8,
+                            formatter: '{value}%'
+                        },
+                        // 核心修复：起始值固定为0
+                        min: 0,
+                        max: ratioCeil > 100 ? ratioCeil : 120,
+                        splitNumber: 6,
+                        // 占比轴网格线隐藏，避免重叠
+                        splitLine: { show: false },
+                        // 恢复坐标轴和刻度样式
+                        axisLine: { 
+                            lineStyle: { 
+                                color: '#dcdfe6',
+                                width: 1
+                            } 
+                        },
+                        axisTick: { 
+                            show: true,
+                            lineStyle: {
+                                color: '#dcdfe6',
+                                width: 1
+                            }
+                        }
+                    }
                 ],
+                // 系列样式美化
                 series: [
-                    { name: '2025年成本', type: 'line', yAxisIndex:0, data: data2025, smooth:true, color:'#1677ff', lineStyle:{width:2} },
-                    { name: '2026年成本', type: 'line', yAxisIndex:0, data: data2026, smooth:true, color:'#36cbcb', lineStyle:{width:2} },
-                    { name: '26年占25年占比(%)', type: 'line', yAxisIndex:1, data: ratioData, smooth:true, color:'#ff7d00', lineStyle:{width:2}, symbol:'circle' }
+                    { 
+                        name: '2025年成本', 
+                        type: 'line', 
+                        yAxisIndex: 0, 
+                        data: data2025, 
+                        smooth: true, 
+                        color: '#1677ff', 
+                        lineStyle: {
+                            width: 2.5,
+                            opacity: 0.9
+                        },
+                        symbol: 'circle',
+                        symbolSize: 6,
+                        symbolOffset: [0, 0],
+                        itemStyle: { 
+                            color: '#1677ff',
+                            borderColor: '#fff',
+                            borderWidth: 1.5
+                        },
+                        emphasis: {
+                            symbolSize: 9,
+                            itemStyle: {
+                                shadowBlur: 5,
+                                shadowColor: 'rgba(22,119,255,0.5)'
+                            }
+                        }
+                    },
+                    { 
+                        name: '2026年成本', 
+                        type: 'line', 
+                        yAxisIndex: 0, 
+                        data: data2026, 
+                        smooth: true, 
+                        color: '#36cbcb', 
+                        lineStyle: {
+                            width: 2.5,
+                            opacity: 0.9
+                        },
+                        symbol: 'circle',
+                        symbolSize: 6,
+                        itemStyle: { 
+                            color: '#36cbcb',
+                            borderColor: '#fff',
+                            borderWidth: 1.5
+                        },
+                        emphasis: {
+                            symbolSize: 9,
+                            itemStyle: {
+                                shadowBlur: 5,
+                                shadowColor: 'rgba(54,203,203,0.5)'
+                            }
+                        }
+                    },
+                    { 
+                        name: '26年占25年占比(%)', 
+                        type: 'line', 
+                        yAxisIndex: 1, 
+                        data: ratioData, 
+                        smooth: true, 
+                        color: '#ff7d00', 
+                        lineStyle: {
+                            width: 2.5,
+                            opacity: 0.9
+                        },
+                        symbol: 'circle',
+                        symbolSize: 6,
+                        itemStyle: { 
+                            color: '#ff7d00',
+                            borderColor: '#fff',
+                            borderWidth: 1.5
+                        },
+                        emphasis: {
+                            symbolSize: 9,
+                            itemStyle: {
+                                shadowBlur: 5,
+                                shadowColor: 'rgba(255,125,0,0.5)'
+                            }
+                        }
+                    }
                 ],
-                grid: { top: 30, left: 40, right: 40, bottom: 30 } // 调整图表内边距，更紧凑
+                // 图表内边距优化
+                grid: { 
+                    top: 60, 
+                    left: 70, 
+                    right: 70, 
+                    bottom: 40,
+                    containLabel: true
+                },
+                // 背景色优化
+                backgroundColor: 'transparent',
+                // 动画效果
+                animationDuration: 1000,
+                animationEasing: 'cubicOut'
             };
             myChart.setOption(option);
         }
 
-        // 绘制占比表格（贴合截图样式）
+        // 绘制占比表格（优化样式）
         function renderTable(data2025, data2026) {
-            let html = `<table class="w-full border-collapse text-sm"><thead><tr style="background:#f8f8f8;">
-                <th class="border border-gray-200 p-1 text-center" style="font-size:11px;">月份</th>
-                <th class="border border-gray-200 p-1 text-center" style="font-size:11px;">2025年</th>
-                <th class="border border-gray-200 p-1 text-center" style="font-size:11px;">2026年</th>
-                <th class="border border-gray-200 p-1 text-center" style="font-size:11px;">同比占比</th>
+            let html = `<table class="w-full border-collapse text-sm"><thead><tr style="background:#f8f9fa;">
+                <th class="border border-gray-200 p-2 text-center" style="font-size:12px; font-weight:600; color:#333;">月份</th>
+                <th class="border border-gray-200 p-2 text-center" style="font-size:12px; font-weight:600; color:#333;">2025年</th>
+                <th class="border border-gray-200 p-2 text-center" style="font-size:12px; font-weight:600; color:#333;">2026年</th>
+                <th class="border border-gray-200 p-2 text-center" style="font-size:12px; font-weight:600; color:#333;">同比占比</th>
             </tr></thead><tbody>`;
             
             monthList.forEach((m, i) => {
                 const c25 = data2025[i], c26 = data2026[i];
-                let r = "-", cls = "text-gray-400";
+                let r = "-", cls = "text-gray-500";
                 if (c25 && c25!==0 && c26) {
                     const v = (c26/c25*100).toFixed(2);
-                    r = v+"%"; cls = v>=100 ? "text-red-600 font-bold" : "text-green-600 font-bold";
+                    r = v+"%"; 
+                    cls = v>=100 ? "text-red-600 font-bold" : "text-green-600 font-bold";
                 }
-                html += `<tr class="hover:bg-gray-50">
-                    <td class="border border-gray-200 p-1 text-center" style="font-size:11px;">${m}</td>
-                    <td class="border border-gray-200 p-1 text-center" style="font-size:11px;">${c25??"-"}</td>
-                    <td class="border border-gray-200 p-1 text-center" style="font-size:11px;">${c26??"-"}</td>
-                    <td class="border border-gray-200 p-1 text-center ${cls}" style="font-size:11px;">${r}</td>
+                html += `<tr class="hover:bg-f0f2f5 transition-colors">
+                    <td class="border border-gray-200 p-2 text-center" style="font-size:12px; color:#666;">${m}</td>
+                    <td class="border border-gray-200 p-2 text-center" style="font-size:12px; color:#666;">${c25??"-"}</td>
+                    <td class="border border-gray-200 p-2 text-center" style="font-size:12px; color:#666;">${c26??"-"}</td>
+                    <td class="border border-gray-200 p-2 text-center ${cls}" style="font-size:12px;">${r}</td>
                 </tr>`;
             });
             html += `</tbody></table>`;
@@ -337,7 +578,8 @@
                 
                 document.getElementById('panel2').style.width = `calc(50vw - 15px)`;
                 document.getElementById('panel2').style.height = topPanelHeight;
-                document.getElementById('panel3').style.left = `calc(50vw + 5px)`;
+                // 核心修改：窗口缩放时右侧面板left也保持calc(50vw + 10px)
+                document.getElementById('panel3').style.left = `calc(50vw + 10px)`;
                 document.getElementById('panel3').style.width = `calc(50vw - 15px)`;
                 document.getElementById('panel3').style.height = topPanelHeight;
                 document.getElementById('panel1').style.top = `calc(70vh)`;
