@@ -16,6 +16,13 @@
             overflow-x: hidden; /* 防止横向滚动 */
             height: 100vh; /* 确保body占满视口高度 */
             margin: 0;
+            transition: background 0.3s ease;
+        }
+
+        /* 暗黑模式基础样式 */
+        body.dark {
+            background: #1e1e2f;
+            color: #e5e7eb;
         }
         
         /* 标题区域：适配截图的标题样式 */
@@ -25,7 +32,13 @@
             padding: 5px 0;
             margin-bottom: 10px;
             height: 40px; /* 固定标题高度，避免影响比例 */
+            transition: background 0.3s ease;
         }
+
+        body.dark .title-container {
+            background: #1e1e2f;
+        }
+
         .main-title {
             font-size: 20px; /* 缩小标题字号，贴合截图 */
             font-weight: 600;
@@ -33,13 +46,25 @@
             color: #333;
             margin: 0;
             line-height: 40px; /* 垂直居中 */
+            transition: color 0.3s ease;
         }
-        /* 重置布局按钮：贴合截图右上角样式 */
-        .reset-btn {
+
+        body.dark .main-title {
+            color: #e5e7eb;
+        }
+
+        /* 按钮容器：放置切换按钮和重置按钮 */
+        .btn-container {
             position: absolute;
             top: 50%;
             right: 10px;
             transform: translateY(-50%);
+            display: flex;
+            gap: 8px;
+        }
+
+        /* 重置布局按钮：贴合截图右上角样式 */
+        .reset-btn {
             padding: 4px 10px;
             background: #1677ff;
             color: white;
@@ -49,8 +74,41 @@
             font-size: 12px;
             transition: background 0.2s;
         }
+
         .reset-btn:hover {
             background: #0f62d9;
+        }
+
+        body.dark .reset-btn {
+            background: #2563eb;
+        }
+
+        body.dark .reset-btn:hover {
+            background: #1d4ed8;
+        }
+
+        /* 暗黑模式切换按钮 */
+        .theme-toggle-btn {
+            padding: 4px 10px;
+            background: #666;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: background 0.2s;
+        }
+
+        .theme-toggle-btn:hover {
+            background: #444;
+        }
+
+        body.dark .theme-toggle-btn {
+            background: #374151;
+        }
+
+        body.dark .theme-toggle-btn:hover {
+            background: #1f2937;
         }
 
         /* 拖拽面板样式：贴合截图的视觉效果 */
@@ -66,7 +124,15 @@
             user-select: none;
             z-index: 10;
             border: 1px solid #e8e8e8; /* 新增边框，贴合截图 */
+            transition: all 0.3s ease;
         }
+
+        body.dark .draggable-panel {
+            background: #2d2d42;
+            border: 1px solid #444;
+            box-shadow: 0 1px 6px rgba(0,0,0,0.3);
+        }
+
         .draggable-panel .panel-header {
             cursor: move;
             padding: 0.3rem 0;
@@ -75,6 +141,54 @@
             font-size: 14px; /* 缩小面板标题字号 */
             color: #555;
             font-weight: 600;
+            transition: color 0.3s ease;
+        }
+
+        body.dark .draggable-panel .panel-header {
+            color: #d1d5db;
+        }
+
+        /* 文本域样式适配 */
+        #jsonInput {
+            transition: all 0.3s ease;
+        }
+
+        body.dark #jsonInput {
+            background: #373750;
+            color: #e5e7eb;
+            border-color: #444;
+        }
+
+        /* 表格暗黑模式适配 */
+        body.dark table {
+            color: #e5e7eb;
+        }
+
+        body.dark table th {
+            background: #373750;
+            border-color: #444;
+            color: #d1d5db;
+        }
+
+        body.dark table td {
+            border-color: #444;
+            color: #e5e7eb;
+        }
+
+        body.dark table tr:hover {
+            background: #373750;
+        }
+
+        body.dark .text-red-600 {
+            color: #f87171;
+        }
+
+        body.dark .text-green-600 {
+            color: #4ade80;
+        }
+
+        body.dark .text-gray-500 {
+            color: #9ca3af;
         }
     </style>
 </head>
@@ -83,7 +197,11 @@
         <!-- 标题容器 -->
         <div class="title-container">
             <h1 class="main-title">2025-2026年月度成本对比分析</h1>
-            <button class="reset-btn" id="resetLayoutBtn">重置布局</button>
+            <!-- 按钮容器 -->
+            <div class="btn-container">
+                <button class="theme-toggle-btn" id="themeToggleBtn">切换暗黑模式</button>
+                <button class="reset-btn" id="resetLayoutBtn">重置布局</button>
+            </div>
         </div>
 
         <!-- 上半部分：图表+表格并列（占视口70%高度） -->
@@ -117,6 +235,28 @@
         };
 
         let timer = null;
+        // 存储当前主题状态
+        let isDarkTheme = localStorage.getItem('darkTheme') === 'true' || false;
+
+        // 初始化主题
+        function initTheme() {
+            if (isDarkTheme) {
+                document.body.classList.add('dark');
+                document.getElementById('themeToggleBtn').textContent = '切换浅色模式';
+            } else {
+                document.body.classList.remove('dark');
+                document.getElementById('themeToggleBtn').textContent = '切换暗黑模式';
+            }
+            // 刷新图表适配主题
+            refreshChart();
+        }
+
+        // 切换主题
+        function toggleTheme() {
+            isDarkTheme = !isDarkTheme;
+            localStorage.setItem('darkTheme', isDarkTheme);
+            initTheme();
+        }
 
         // 本地存储：保存/读取面板布局
         const STORAGE_KEY = "dashboard_layout_v2";
@@ -246,6 +386,11 @@
 
         // 初始化
         window.onload = function() {
+            // 初始化主题
+            initTheme();
+            // 绑定主题切换事件
+            document.getElementById('themeToggleBtn').addEventListener('click', toggleTheme);
+            
             loadLayout();
             const inputEl = document.getElementById('jsonInput');
             inputEl.value = JSON.stringify(defaultData, null, 2);
@@ -274,7 +419,7 @@
             }
         }
 
-        // 绘制双Y轴图表（修复XY轴起始值+美化样式）
+        // 绘制双Y轴图表（修复XY轴起始值+美化样式 + 暗黑模式适配）
         function renderChart(data2025, data2026) {
             const ratioData = data2025.map((val, idx) => {
                 const c26 = data2026[idx];
@@ -293,11 +438,30 @@
             // 向上取整，确保占比轴显示完整
             const ratioCeil = Math.ceil(ratioMax / 10) * 10;
 
+            // 根据主题设置图表颜色
+            const themeColors = isDarkTheme ? {
+                text: '#e5e7eb',
+                axisLine: '#444',
+                splitLine: '#373750',
+                legendBg: 'rgba(45,45,66,0.8)',
+                tooltipBg: 'rgba(45,45,66,0.95)',
+                tooltipBorder: '#444',
+                chartBg: 'transparent'
+            } : {
+                text: '#333',
+                axisLine: '#dcdfe6',
+                splitLine: '#f5f7fa',
+                legendBg: 'rgba(248,250,252,0.8)',
+                tooltipBg: 'rgba(255,255,255,0.95)',
+                tooltipBorder: '#e8e8e8',
+                chartBg: 'transparent'
+            };
+
             const option = {
                 // 全局样式优化
                 textStyle: {
                     fontFamily: "Microsoft YaHei",
-                    color: "#333"
+                    color: themeColors.text
                 },
                 // 提示框美化
                 tooltip: {
@@ -309,15 +473,16 @@
                             <span style="color:#36cbcb;">●</span> 2026年：${data2026[i]??"-"} 元<br/>
                             <span style="color:#ff7d00;">●</span> 占比：${ratioData[i]?ratioData[i]+"%":"-"}`;
                     },
-                    backgroundColor: 'rgba(255,255,255,0.95)',
-                    borderColor: '#e8e8e8',
+                    backgroundColor: themeColors.tooltipBg,
+                    borderColor: themeColors.tooltipBorder,
                     borderWidth: 1,
                     padding: 10,
                     textStyle: {
-                        fontSize: 12
+                        fontSize: 12,
+                        color: themeColors.text
                     },
                     shadowBlur: 5,
-                    shadowColor: 'rgba(0,0,0,0.1)'
+                    shadowColor: isDarkTheme ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.1)'
                 },
                 // 图例美化
                 legend: { 
@@ -328,8 +493,11 @@
                     itemWidth: 15,
                     itemHeight: 8,
                     itemGap: 20,
-                    backgroundColor: 'rgba(248,250,252,0.8)',
-                    padding: [5, 15]
+                    backgroundColor: themeColors.legendBg,
+                    padding: [5, 15],
+                    textStyle: {
+                        color: themeColors.text
+                    }
                 },
                 // X轴修复：显示刻度，起始值正常，样式美化
                 xAxis: { 
@@ -337,19 +505,19 @@
                     data: monthList, 
                     axisLabel: { 
                         fontSize: 12,
-                        color: '#666',
+                        color: themeColors.text,
                         margin: 10
                     },
                     axisLine: { 
                         lineStyle: { 
-                            color: '#dcdfe6',
+                            color: themeColors.axisLine,
                             width: 1
                         } 
                     },
                     axisTick: { 
                         show: true,
                         lineStyle: {
-                            color: '#dcdfe6',
+                            color: themeColors.axisLine,
                             width: 1
                         },
                         alignWithLabel: true
@@ -366,12 +534,12 @@
                         position: 'left', 
                         nameTextStyle: {
                             fontSize: 12,
-                            color: '#666',
+                            color: themeColors.text,
                             padding: [0, 0, 0, 10]
                         },
                         axisLabel: { 
                             fontSize: 12,
-                            color: '#666',
+                            color: themeColors.text,
                             margin: 8,
                             formatter: '{value}'
                         },
@@ -384,7 +552,7 @@
                         splitLine: {
                             show: true,
                             lineStyle: { 
-                                color: '#f5f7fa',
+                                color: themeColors.splitLine,
                                 width: 1,
                                 type: 'solid' // 实线网格，更清晰
                             }
@@ -392,14 +560,14 @@
                         // 恢复坐标轴和刻度样式
                         axisLine: { 
                             lineStyle: { 
-                                color: '#dcdfe6',
+                                color: themeColors.axisLine,
                                 width: 1
                             } 
                         },
                         axisTick: { 
                             show: true,
                             lineStyle: {
-                                color: '#dcdfe6',
+                                color: themeColors.axisLine,
                                 width: 1
                             }
                         }
@@ -410,12 +578,12 @@
                         position: 'right', 
                         nameTextStyle: {
                             fontSize: 12,
-                            color: '#666',
+                            color: themeColors.text,
                             padding: [0, 10, 0, 0]
                         },
                         axisLabel: { 
                             fontSize: 12,
-                            color: '#666',
+                            color: themeColors.text,
                             margin: 8,
                             formatter: '{value}%'
                         },
@@ -428,14 +596,14 @@
                         // 恢复坐标轴和刻度样式
                         axisLine: { 
                             lineStyle: { 
-                                color: '#dcdfe6',
+                                color: themeColors.axisLine,
                                 width: 1
                             } 
                         },
                         axisTick: { 
                             show: true,
                             lineStyle: {
-                                color: '#dcdfe6',
+                                color: themeColors.axisLine,
                                 width: 1
                             }
                         }
@@ -459,7 +627,7 @@
                         symbolOffset: [0, 0],
                         itemStyle: { 
                             color: '#1677ff',
-                            borderColor: '#fff',
+                            borderColor: isDarkTheme ? '#444' : '#fff',
                             borderWidth: 1.5
                         },
                         emphasis: {
@@ -485,7 +653,7 @@
                         symbolSize: 6,
                         itemStyle: { 
                             color: '#36cbcb',
-                            borderColor: '#fff',
+                            borderColor: isDarkTheme ? '#444' : '#fff',
                             borderWidth: 1.5
                         },
                         emphasis: {
@@ -511,7 +679,7 @@
                         symbolSize: 6,
                         itemStyle: { 
                             color: '#ff7d00',
-                            borderColor: '#fff',
+                            borderColor: isDarkTheme ? '#444' : '#fff',
                             borderWidth: 1.5
                         },
                         emphasis: {
@@ -532,7 +700,7 @@
                     containLabel: true
                 },
                 // 背景色优化
-                backgroundColor: 'transparent',
+                backgroundColor: themeColors.chartBg,
                 // 动画效果
                 animationDuration: 1000,
                 animationEasing: 'cubicOut'
