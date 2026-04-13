@@ -139,7 +139,7 @@
                         target.style.height = event.rect.height + 'px';
                         x += event.deltaRect.left;
                         y += event.deltaRect.top;
-                        target.style.transform = `translate(${x}px, ${y}px)`;
+                        target.style.transform = `translate(${x}px, ${l.y}px)`;
                         target.setAttribute('data-x', x);
                         target.setAttribute('data-y', y);
                         myChart.resize();
@@ -170,8 +170,10 @@
                 const data2025 = inputData["2025"] || [];
                 const data2026 = inputData["2026"] || [];
                 if (data2025.length !== 12 || data2026.length !== 12) return;
+                
+                // ✅ 修复BUG：这里之前写错了变量名
                 renderChart(data2025, data2026);
-                renderTable(data2025, data206);
+                renderTable(data2025, data2026);
             } catch (e) {}
         }
 
