@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2025-2026年月度成本对比分析</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: "Microsoft YaHei", sans-serif; background: #f5f7fa; padding: 20px; }
+    </style>
+</head>
+<body>
+    <div class="max-w-7xl mx-auto">
+        <h1 class="text-2xl font-bold text-center text-gray-800 mb-6">2025-2026年月度成本对比分析</h1>
+        
+        <div class="flex justify-center mb-4 gap-3">
+            <button onclick="refreshChart()" class="px-5 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition">刷新图表与数据</button>
+            <button onclick="resetData()" class="px-5 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition">重置默认数据</button>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-6">
+            <div class="bg-white p-4 rounded-lg shadow">
+                <h2 class="text-lg font-semibold mb-3 text-gray-700">📝 JSON数据录入（修改后自动刷新）</h2>
+                <textarea id="jsonInput" class="w-full h-[520px] p-2 border border-gray-300 rounded font-mono text-sm resize-none"></textarea>
+            </div>
+
+            <div class="bg-white p-4 rounded-lg shadow">
+                <h2 class="text-lg font-semibold mb-3 text-gray-700">📈 成本对比 + 占比折线（双Y轴）</h2>
+                <div id="mainChart" class="w-full h-[520px]"></div>
+            </div>
+
+            <div class="bg-white p-4 rounded-lg shadow">
+                <h2 class="text-lg font-semibold mb-3 text-gray-700">📊 26年占25年同期占比</h2>
+                <div id="ratioTable" class="h-[520px] overflow-y-auto"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const myChart = echarts.init(document.getElementById('mainChart'));
+        const monthList = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
+        
+        const defaultData = {
+            "2025": [1200, 1300, 1250, 1400, 1350, 1500, 1450, 1600, 1550, 1700, 1650, 1800],
+            "2026": [1350, 1420, 1380, 1500, 1600, 1580, null, null, null, null, null, null]
+        };
+
+        let timer = null;
+        window.onload = function() {
+            const inputEl = document.getElementById('jsonInput');
+            inputEl.value = JSON.stringify(defaultData, null, 2);
+            refreshChart();
+
+            // ✅ 核心：输入框内容变化时自动刷新（防抖，不卡顿）
+            inputEl.addEventListener('input', function() {
+                clearTimeout(timer);
+                timer = setTimeout(() => {
+                    refreshChart();
+                }, 300); // 停止输入300毫秒后自动刷新
+            });
+        };
+
+        function refreshChart() {
+            try {
+                const inputData = JSON.parse(document.getElementById('jsonInput').value);
+                const data2025 = inputData["2025"] || [];
+                const data2026 = inputData["2026"] || [];
+
+                if (data2025.length !== 12 || data2026.length !== 12) {
+                    return;
+                }
+
+                renderChart(data2025, data2026);
+                renderTable(data2025, data2026);
+            } catch (e) {
+                // JSON格式错误时不报错，避免干扰输入
+            }
+        }
+
+        function resetData() {
+            document.getElementById('jsonInput').value = JSON.stringify(defaultData, null, 2);
+            refreshChart();
+        }
+
+        // 双Y轴 + 占比折线
+        function renderChart(data2025, data2026) {
+            const ratioData = data2025.map((val, idx) => {
+                const c26 = data2026[idx];
+                if (val && val !== 0 && c26) {
+                    return parseFloat(((c26 / val) * 100).toFixed(2));
+                }
+                return null;
+            });
+
+            const option = {
+                tooltip: {
+                    trigger: 'axis',
+                    formatter: function(params) {
+                        const index = params[0].dataIndex;
+                        const c25 = data2025[index] ?? "-";
+                        const c26 = data2026[index] ?? "-";
+                        const ratio = ratioData[index] ? ratioData[index] + "%" : "-";
+                        return `${params[0].name}<br/>2025年：${c25} 元<br/>2026年：${c26} 元<br/>占比：${ratio}`;
+                    }
+                },
+                legend: { data: ['2025年成本', '2026年成本', '26年占25年占比(%)'], top: 10 },
+                grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+                xAxis: { type: 'category', data: monthList },
+                
+                yAxis: [
+                    { type: 'value', name: '成本（元）', position: 'left' },
+                    { type: 'value', name: '占比（%）', position: 'right' }
+                ],
+                
+                series: [
+                    { name: '2025年成本', type: 'line', yAxisIndex: 0, data: data2025, smooth: true, color: '#1677ff', lineStyle: { width: 3 } },
+                    { name: '2026年成本', type: 'line', yAxisIndex: 0, data: data2026, smooth: true, color: '#36cbcb', lineStyle: { width: 3 } },
+                    { name: '26年占25年占比(%)', type: 'line', yAxisIndex: 1, data: ratioData, smooth: true, color: '#ff7d00', lineStyle: { width: 3 }, symbol: 'circle' }
+                ]
+            };
+            myChart.setOption(option);
+        }
+
+        // 渲染占比表格
+        function renderTable(data2025, data2026) {
+            let tableHtml = `
+                <table class="w-full border-collapse text-sm">
+                    <thead><tr class="bg-gray-100">
+                        <th class="border p-2">月份</th><th class="border p-2">2025年</th><th class="border p-2">2026年</th><th class="border p-2">同比占比</th>
+                    </tr></thead><tbody>`;
+
+            monthList.forEach((month, index) => {
+                const c25 = data2025[index];
+                const c26 = data2026[index];
+                let ratio = "-";
+                let cls = "text-gray-400";
+
+                if (c25 != null && c25 !== 0 && c26 != null) {
+                    const r = (c26 / c25 * 100).toFixed(2);
+                    ratio = r + "%";
+                    cls = r >= 100 ? "text-red-600 font-bold" : "text-green-600 font-bold";
+                }
+
+                tableHtml += `<tr class="text-center hover:bg-gray-50">
+                    <td class="border p-2">${month}</td>
+                    <td class="border p-2">${c25 ?? "-"}</td>
+                    <td class="border p-2">${c26 ?? "-"}</td>
+                    <td class="border p-2 ${cls}">${ratio}</td>
+                </tr>`;
+            });
+
+            tableHtml += `</tbody></table>`;
+            document.getElementById('ratioTable').innerHTML = tableHtml;
+        }
+
+        window.addEventListener('resize', () => myChart.resize());
+    </script>
+</body>
+</html>
