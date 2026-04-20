@@ -289,6 +289,45 @@
         let startDate = '2025-03-30';
         // 默认产品名称（空）
         let productName = '';
+        // 默认用量数据
+        let defaultData = `20442
+20629
+19180
+18713
+18466
+18382
+18382
+18373
+18466
+18549
+18532
+18526
+18344
+18306`;
+        
+        // ========== 新增：解析URL GET参数 ==========
+        function getUrlParams() {
+            const params = new URLSearchParams(window.location.search);
+            const result = {
+                date: params.get('date') || '',
+                product: params.get('product') || '',
+                data: params.get('data') || ''
+            };
+            return result;
+        }
+
+        // ========== 新增：解码URL中的用量数据 ==========
+        function decodeUsageData(encodedData) {
+            if (!encodedData) return '';
+            try {
+                // 解码URL编码的字符串，然后按逗号分割转为每行一个数字
+                const decoded = decodeURIComponent(encodedData);
+                return decoded.split(',').join('\n');
+            } catch (e) {
+                console.error('数据解码失败:', e);
+                return '';
+            }
+        }
         
         // 生成从指定日期开始的日期列表
         function generateDateLabels(startDateStr, count) {
@@ -320,22 +359,6 @@
             const titleEl = document.getElementById('mainTitle');
             titleEl.textContent = `${titleMain}（${month}月${day}日起）`;
         }
-
-        // 默认数据
-        const defaultData = `20442
-20629
-19180
-18713
-18466
-18382
-18382
-18373
-18466
-18549
-18532
-18526
-18344
-18306`;
 
         let timer = null;
         let productTimer = null;
@@ -481,6 +504,25 @@
 
         // 初始化
         window.onload = function() {
+            // ========== 新增：解析GET参数并应用 ==========
+            const urlParams = getUrlParams();
+            
+            // 1. 应用日期参数
+            if (urlParams.date) {
+                startDate = urlParams.date;
+            }
+            
+            // 2. 应用产品名称参数
+            if (urlParams.product) {
+                productName = urlParams.product;
+                document.getElementById('productNameInput').value = productName;
+            }
+            
+            // 3. 应用用量数据参数
+            if (urlParams.data) {
+                defaultData = decodeUsageData(urlParams.data);
+            }
+
             // 初始化日期选择器
             const datePicker = flatpickr('#startDatePicker', {
                 defaultDate: startDate,
@@ -517,7 +559,7 @@
             
             loadLayout();
             const inputEl = document.getElementById('jsonInput');
-            inputEl.value = defaultData;
+            inputEl.value = defaultData; // 使用解析后的默认数据
             // 初始化标题
             updateTitle(startDate, productName);
             refreshChart();
