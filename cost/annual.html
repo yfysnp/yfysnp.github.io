@@ -3,35 +3,33 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>2025-2026年月度成本对比分析</title>
+    <title>25-26年月度成本对比分析</title>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/interactjs/dist/interact.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: "Microsoft YaHei", sans-serif; 
-            background: #f5f7fa; 
-            padding: 10px; /* 缩小整体内边距，更紧凑 */
-            overflow-x: hidden; /* 防止横向滚动 */
-            height: 100vh; /* 确保body占满视口高度 */
+        body {
+            font-family: "Microsoft YaHei", sans-serif;
+            background: #f5f7fa;
+            padding: 10px;
+            overflow-x: hidden;
+            height: 100vh;
             margin: 0;
             transition: background 0.3s ease;
         }
 
-        /* 暗黑模式基础样式 */
         body.dark {
             background: #1e1e2f;
             color: #e5e7eb;
         }
-        
-        /* 标题区域：适配截图的标题样式 */
+
         .title-container {
             position: relative;
             background: #f5f7fa;
             padding: 5px 0;
             margin-bottom: 10px;
-            height: 40px; /* 固定标题高度，避免影响比例 */
+            height: 40px;
             transition: background 0.3s ease;
         }
 
@@ -40,12 +38,12 @@
         }
 
         .main-title {
-            font-size: 20px; /* 缩小标题字号，贴合截图 */
+            font-size: 20px;
             font-weight: 600;
             text-align: center;
             color: #333;
             margin: 0;
-            line-height: 40px; /* 垂直居中 */
+            line-height: 40px;
             transition: color 0.3s ease;
         }
 
@@ -53,7 +51,6 @@
             color: #e5e7eb;
         }
 
-        /* 按钮容器：放置切换按钮和重置按钮 */
         .btn-container {
             position: absolute;
             top: 50%;
@@ -63,182 +60,237 @@
             gap: 8px;
         }
 
-        /* 重置布局按钮：贴合截图右上角样式 */
         .reset-btn {
-            padding: 4px 10px;
+            padding: 5px 12px;
             background: #1677ff;
             color: white;
             border: none;
-            border-radius: 3px;
+            border-radius: 4px;
             cursor: pointer;
             font-size: 12px;
-            transition: background 0.2s;
+            font-weight: 500;
+            transition: background 0.2s, box-shadow 0.2s;
         }
 
         .reset-btn:hover {
             background: #0f62d9;
+            box-shadow: 0 2px 8px rgba(22,119,255,0.3);
         }
 
-        body.dark .reset-btn {
-            background: #2563eb;
-        }
+        body.dark .reset-btn { background: #2563eb; }
+        body.dark .reset-btn:hover { background: #1d4ed8; box-shadow: 0 2px 8px rgba(37,99,235,0.4); }
 
-        body.dark .reset-btn:hover {
-            background: #1d4ed8;
-        }
-
-        /* 暗黑模式切换按钮 */
         .theme-toggle-btn {
-            padding: 4px 10px;
-            background: #666;
+            padding: 5px 12px;
+            background: #6b7280;
             color: white;
             border: none;
-            border-radius: 3px;
+            border-radius: 4px;
             cursor: pointer;
             font-size: 12px;
-            transition: background 0.2s;
+            font-weight: 500;
+            transition: background 0.2s, box-shadow 0.2s;
         }
 
-        .theme-toggle-btn:hover {
-            background: #444;
-        }
+        .theme-toggle-btn:hover { background: #4b5563; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+        body.dark .theme-toggle-btn { background: #374151; }
+        body.dark .theme-toggle-btn:hover { background: #1f2937; }
 
-        body.dark .theme-toggle-btn {
-            background: #374151;
-        }
-
-        body.dark .theme-toggle-btn:hover {
-            background: #1f2937;
-        }
-
-        /* 拖拽面板样式：贴合截图的视觉效果 */
         .draggable-panel {
             position: absolute;
             background: white;
-            padding: 0.8rem; /* 缩小内边距 */
-            border-radius: 4px; /* 更小的圆角，贴合截图 */
-            box-shadow: 0 1px 6px rgba(0,0,0,0.08); /* 更淡的阴影 */
+            padding: 0.8rem;
+            border-radius: 6px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.07);
             min-width: 300px;
             resize: both;
             overflow: hidden;
             user-select: none;
             z-index: 10;
-            border: 1px solid #e8e8e8; /* 新增边框，贴合截图 */
-            transition: all 0.3s ease;
+            border: 1px solid #e8e8e8;
+            transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.2s;
+        }
+
+        .draggable-panel:hover {
+            box-shadow: 0 4px 18px rgba(0,0,0,0.11);
         }
 
         body.dark .draggable-panel {
             background: #2d2d42;
-            border: 1px solid #444;
-            box-shadow: 0 1px 6px rgba(0,0,0,0.3);
+            border: 1px solid #3d3d56;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        }
+
+        body.dark .draggable-panel:hover {
+            box-shadow: 0 4px 18px rgba(0,0,0,0.45);
         }
 
         .draggable-panel .panel-header {
             cursor: move;
-            padding: 0.3rem 0;
+            padding-bottom: 8px;
             margin-bottom: 0.5rem;
             user-select: none;
-            font-size: 14px; /* 缩小面板标题字号 */
-            color: #555;
+            font-size: 14px;
+            color: #444;
             font-weight: 600;
-            transition: color 0.3s ease;
+            border-bottom: 1px solid #f0f0f0;
+            transition: color 0.3s ease, border-color 0.3s ease;
         }
 
         body.dark .draggable-panel .panel-header {
             color: #d1d5db;
+            border-bottom-color: #3d3d56;
         }
 
-        /* 文本域样式适配 */
         #jsonInput {
-            transition: all 0.3s ease;
+            transition: border-color 0.2s, box-shadow 0.2s;
+            outline: none;
+            resize: none;
         }
+
+        #jsonInput:focus {
+            border-color: #1677ff !important;
+            box-shadow: 0 0 0 2px rgba(22,119,255,0.15);
+        }
+
+        #jsonInput.error {
+            border-color: #ef4444 !important;
+            box-shadow: 0 0 0 2px rgba(239,68,68,0.15);
+        }
+
+        .json-hint {
+            font-size: 11px;
+            color: #9ca3af;
+            margin-top: 4px;
+            line-height: 1.4;
+        }
+
+        .json-hint.error-msg { color: #ef4444; }
 
         body.dark #jsonInput {
             background: #373750;
             color: #e5e7eb;
-            border-color: #444;
+            border-color: #4a4a6a;
         }
 
-        /* 表格暗黑模式适配 */
-        body.dark table {
-            color: #e5e7eb;
+        body.dark #jsonInput:focus {
+            border-color: #3b82f6 !important;
+            box-shadow: 0 0 0 2px rgba(59,130,246,0.2);
         }
 
-        body.dark table th {
-            background: #373750;
-            border-color: #444;
-            color: #d1d5db;
+        body.dark #jsonInput.error { border-color: #f87171 !important; }
+
+        body.dark table { color: #e5e7eb; }
+        body.dark table th { background: #373750; border-color: #3d3d56; color: #d1d5db; }
+        body.dark table td { border-color: #3d3d56; color: #e5e7eb; }
+
+        tbody tr:nth-child(even) td { background: #f9fafb; }
+        body.dark tbody tr:nth-child(even) td { background: #323248; }
+
+        tbody tr:hover td {
+            background: #eef4ff !important;
+            transition: background 0.15s;
         }
 
-        body.dark table td {
-            border-color: #444;
-            color: #e5e7eb;
-        }
+        body.dark tbody tr:hover td { background: #3a3a56 !important; }
 
-        body.dark table tr:hover {
-            background: #373750;
-        }
+        body.dark .text-red-600 { color: #f87171; }
+        body.dark .text-green-600 { color: #4ade80; }
+        body.dark .text-gray-400 { color: #9ca3af; }
 
-        body.dark .text-red-600 {
-            color: #f87171;
-        }
+        /* 移动端响应式 */
+        @media (max-width: 767px) {
+            body { padding: 8px; height: auto; overflow-y: auto; }
 
-        body.dark .text-green-600 {
-            color: #4ade80;
-        }
+            #panelContainer {
+                position: static !important;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+                min-height: unset;
+            }
 
-        body.dark .text-gray-500 {
-            color: #9ca3af;
+            .title-container {
+                height: auto;
+                padding: 8px 0 6px;
+                margin-bottom: 0;
+            }
+
+            .main-title { font-size: 16px; line-height: 1.4; margin-bottom: 8px; }
+
+            .btn-container {
+                position: static;
+                transform: none;
+                justify-content: center;
+                margin-top: 2px;
+            }
+
+            .draggable-panel {
+                position: static !important;
+                width: 100% !important;
+                height: auto !important;
+                transform: none !important;
+                min-width: unset;
+                resize: none;
+                border-radius: 8px;
+            }
+
+            .draggable-panel .panel-header { cursor: default; }
+
+            #panel2 { order: 1; }
+            #panel3 { order: 2; }
+            #panel1 { order: 3; }
+
+            #mainChart { height: 260px !important; }
+            #ratioTable { max-height: 320px; overflow-y: auto; }
+            #jsonInput { height: 150px !important; }
         }
     </style>
 </head>
 <body>
     <div class="relative min-h-[calc(100vh-20px)]" id="panelContainer">
-        <!-- 标题容器 -->
         <div class="title-container">
-            <h1 class="main-title">2025-2026年月度成本对比分析</h1>
-            <!-- 按钮容器 -->
+            <h1 class="main-title">25-26年月度成本对比分析</h1>
             <div class="btn-container">
                 <button class="theme-toggle-btn" id="themeToggleBtn">切换暗黑模式</button>
                 <button class="reset-btn" id="resetLayoutBtn">重置布局</button>
             </div>
         </div>
 
-        <!-- 上半部分：图表+表格并列（占视口70%高度） -->
-        <!-- 调整：左侧面板left保持10px，右侧面板left调整为calc(50vw + 10px)，宽度统一为calc(50vw - 15px) -->
         <div class="draggable-panel" id="panel2" style="left: 10px; top: 50px; z-index: 12; width: calc(50vw - 15px); height: calc(70vh - 60px);">
             <h2 class="panel-header">📈 成本对比 + 占比折线（双Y轴）</h2>
-            <div id="mainChart" class="w-full h-[calc(100%-30px)]"></div>
+            <div id="mainChart" class="w-full" style="height: calc(100% - 40px);"></div>
         </div>
 
-        <!-- 核心修改：右侧面板left从calc(50vw + 5px)改为calc(50vw + 10px)，确保右侧也有10px边距 -->
         <div class="draggable-panel" id="panel3" style="left: calc(50vw + 10px); top: 50px; z-index: 13; width: calc(50vw - 15px); height: calc(70vh - 60px);">
-            <h2 class="panel-header">📊 26年占25年同期占比</h2>
-            <div id="ratioTable" class="w-full h-[calc(100%-30px)] overflow-y-auto"></div>
+            <h2 class="panel-header">📊 26年较25年同期增长</h2>
+            <div id="ratioTable" class="w-full overflow-y-auto" style="height: calc(100% - 40px);"></div>
         </div>
 
-        <!-- 下半部分：JSON面板（占视口30%高度） -->
-        <!-- 调整：右侧边距也改为10px，宽度从calc(100vw - 20px)改为calc(100vw - 20px)（保持一致） -->
         <div class="draggable-panel" id="panel1" style="left: 10px; top: calc(70vh); z-index: 11; width: calc(100vw - 20px); height: calc(30vh - 20px);">
             <h2 class="panel-header">📝 JSON数据录入（修改后自动刷新）</h2>
-            <textarea id="jsonInput" class="w-full h-[calc(100%-30px)] p-2 border border-gray-200 rounded font-mono text-sm"></textarea>
+            <textarea id="jsonInput" class="w-full p-2 border border-gray-200 rounded font-mono text-sm" style="height: calc(100% - 52px);"></textarea>
+            <div class="json-hint" id="jsonHint">格式：{"2025": [1月,…,12月], "2026": [1月,…,12月]}，未录入月份填 null</div>
         </div>
     </div>
 
     <script>
         const myChart = echarts.init(document.getElementById('mainChart'));
         const monthList = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
-        
+
         const defaultData = {
             "2025": [1200,1300,1250,1400,1350,1500,1450,1600,1550,1700,1650,1800],
             "2026": [1350,1420,1380,1500,1600,1580,null,null,null,null,null,null]
         };
 
         let timer = null;
-        // 存储当前主题状态
-        let isDarkTheme = localStorage.getItem('darkTheme') === 'true' || false;
+        let isDarkTheme = localStorage.getItem('darkTheme') === 'true';
+        let interactInited = false;
 
-        // 初始化主题
+        function isMobile() {
+            return window.innerWidth < 768;
+        }
+
         function initTheme() {
             if (isDarkTheme) {
                 document.body.classList.add('dark');
@@ -247,19 +299,17 @@
                 document.body.classList.remove('dark');
                 document.getElementById('themeToggleBtn').textContent = '切换暗黑模式';
             }
-            // 刷新图表适配主题
             refreshChart();
         }
 
-        // 切换主题
         function toggleTheme() {
             isDarkTheme = !isDarkTheme;
             localStorage.setItem('darkTheme', isDarkTheme);
             initTheme();
         }
 
-        // 本地存储：保存/读取面板布局
         const STORAGE_KEY = "dashboard_layout_v2";
+
         function saveLayout() {
             const data = {};
             document.querySelectorAll('.draggable-panel').forEach(el => {
@@ -272,13 +322,15 @@
             });
             localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         }
+
         function loadLayout() {
-            const data = localStorage.getItem(STORAGE_KEY);
-            if(!data) return;
-            const layouts = JSON.parse(data);
-            for(const id in layouts) {
+            if (isMobile()) return;
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw) return;
+            const layouts = JSON.parse(raw);
+            for (const id in layouts) {
                 const el = document.getElementById(id);
-                if(!el) continue;
+                if (!el) continue;
                 const l = layouts[id];
                 el.style.width = l.w;
                 el.style.height = l.h;
@@ -288,471 +340,294 @@
                 el.setAttribute('data-y', y);
                 el.style.transform = `translate(${x}px, ${y}px)`;
             }
-            myChart.resize();
         }
 
-        // 重置布局函数（适配30%/70%高度比例）
         function resetLayout() {
             localStorage.removeItem(STORAGE_KEY);
-            // 基于视口高度的30%/70%比例布局
-            const viewportHeight = window.innerHeight;
-            const topPanelHeight = `calc(70vh - 60px)`; // 70%视口高度 - 标题/间距
-            const bottomPanelHeight = `calc(30vh - 20px)`; // 30%视口高度 - 间距
-            
             const panels = {
-                panel2: { 
-                    left: '10px', 
-                    top: '50px', 
-                    width: `calc(50vw - 15px)`, 
-                    height: topPanelHeight, 
-                    zIndex:12 
-                },
-                // 核心修改：右侧面板left改为calc(50vw + 10px)，确保右侧边距10px
-                panel3: { 
-                    left: `calc(50vw + 10px)`, 
-                    top: '50px', 
-                    width: `calc(50vw - 15px)`, 
-                    height: topPanelHeight, 
-                    zIndex:13 
-                },
-                panel1: { 
-                    left: '10px', 
-                    top: `calc(70vh)`, 
-                    width: `calc(100vw - 20px)`, 
-                    height: bottomPanelHeight, 
-                    zIndex:11 
-                }
+                panel2: { left: '10px', top: '50px', width: 'calc(50vw - 15px)', height: 'calc(70vh - 60px)', zIndex: 12 },
+                panel3: { left: 'calc(50vw + 10px)', top: '50px', width: 'calc(50vw - 15px)', height: 'calc(70vh - 60px)', zIndex: 13 },
+                panel1: { left: '10px', top: 'calc(70vh)', width: 'calc(100vw - 20px)', height: 'calc(30vh - 20px)', zIndex: 11 }
             };
-            
-            for(const id in panels) {
+            for (const id in panels) {
                 const el = document.getElementById(id);
-                if(el) {
-                    el.style.left = panels[id].left;
-                    el.style.top = panels[id].top;
-                    el.style.width = panels[id].width;
-                    el.style.height = panels[id].height;
-                    el.style.zIndex = panels[id].zIndex;
+                if (el) {
+                    const p = panels[id];
+                    Object.assign(el.style, { left: p.left, top: p.top, width: p.width, height: p.height, zIndex: p.zIndex, transform: 'translate(0px, 0px)' });
                     el.removeAttribute('data-x');
                     el.removeAttribute('data-y');
-                    el.style.transform = 'translate(0px, 0px)';
                 }
             }
             myChart.resize();
             alert('布局已重置为默认状态！');
         }
 
-        // 拖拽 + 缩放（保留原有交互）
-        interact('.draggable-panel')
-            .draggable({
-                inertia: true,
-                modifiers: [
-                    interact.modifiers.restrictRect({
-                        restriction: 'body',
-                        endOnly: false
-                    })
-                ],
-                listeners: {
-                    move(event) {
-                        const target = event.target;
-                        const x = (parseFloat(target.getAttribute('data-x')) || 0) + event.dx;
-                        const y = (parseFloat(target.getAttribute('data-y')) || 0) + event.dy;
-                        target.style.transform = `translate(${x}px, ${y}px)`;
-                        target.setAttribute('data-x', x);
-                        target.setAttribute('data-y', y);
-                        myChart.resize();
-                    },
-                    end: saveLayout
-                }
-            })
-            .resizable({
-                edges: { left: true, right: true, bottom: true, top: true },
-                listeners: {
-                    move(event) {
-                        const target = event.target;
-                        let x = (parseFloat(target.getAttribute('data-x')) || 0);
-                        let y = (parseFloat(target.getAttribute('data-y')) || 0);
-                        target.style.width = event.rect.width + 'px';
-                        target.style.height = event.rect.height + 'px';
-                        x += event.deltaRect.left;
-                        y += event.deltaRect.top;
-                        target.style.transform = `translate(${x}px, ${y}px)`;
-                        target.setAttribute('data-x', x);
-                        target.setAttribute('data-y', y);
-                        myChart.resize();
-                    },
-                    end: saveLayout
-                }
-            });
+        function initInteract() {
+            if (isMobile() || interactInited) return;
+            interactInited = true;
+            interact('.draggable-panel')
+                .draggable({
+                    inertia: true,
+                    modifiers: [interact.modifiers.restrictRect({ restriction: 'body', endOnly: false })],
+                    listeners: {
+                        move(event) {
+                            const t = event.target;
+                            const x = (parseFloat(t.getAttribute('data-x')) || 0) + event.dx;
+                            const y = (parseFloat(t.getAttribute('data-y')) || 0) + event.dy;
+                            t.style.transform = `translate(${x}px, ${y}px)`;
+                            t.setAttribute('data-x', x);
+                            t.setAttribute('data-y', y);
+                        },
+                        end: saveLayout
+                    }
+                })
+                .resizable({
+                    edges: { left: true, right: true, bottom: true, top: true },
+                    listeners: {
+                        move(event) {
+                            const t = event.target;
+                            let x = parseFloat(t.getAttribute('data-x')) || 0;
+                            let y = parseFloat(t.getAttribute('data-y')) || 0;
+                            t.style.width = event.rect.width + 'px';
+                            t.style.height = event.rect.height + 'px';
+                            x += event.deltaRect.left;
+                            y += event.deltaRect.top;
+                            t.style.transform = `translate(${x}px, ${y}px)`;
+                            t.setAttribute('data-x', x);
+                            t.setAttribute('data-y', y);
+                        },
+                        end: saveLayout
+                    }
+                });
+        }
 
-        // 初始化
+        // 用 ResizeObserver 监听图表容器，自动跟随缩放
+        new ResizeObserver(() => myChart.resize()).observe(document.getElementById('mainChart'));
+
         window.onload = function() {
-            // 初始化主题
             initTheme();
-            // 绑定主题切换事件
             document.getElementById('themeToggleBtn').addEventListener('click', toggleTheme);
-            
+            document.getElementById('resetLayoutBtn').addEventListener('click', resetLayout);
             loadLayout();
+            initInteract();
+
             const inputEl = document.getElementById('jsonInput');
             inputEl.value = JSON.stringify(defaultData, null, 2);
             refreshChart();
 
-            document.getElementById('resetLayoutBtn').addEventListener('click', resetLayout);
-
             inputEl.addEventListener('input', function() {
                 clearTimeout(timer);
-                timer = setTimeout(() => refreshChart(), 300);
+                timer = setTimeout(refreshChart, 300);
             });
         };
 
-        // 自动刷新图表和表格
         function refreshChart() {
+            const inputEl = document.getElementById('jsonInput');
+            const hintEl = document.getElementById('jsonHint');
+            const defaultHint = '格式：{"2025": [1月,…,12月], "2026": [1月,…,12月]}，未录入月份填 null';
             try {
-                const inputData = JSON.parse(document.getElementById('jsonInput').value);
+                const inputData = JSON.parse(inputEl.value);
                 const data2025 = inputData["2025"] || [];
                 const data2026 = inputData["2026"] || [];
-                if (data2025.length !== 12 || data2026.length !== 12) return;
-                
+                if (data2025.length !== 12 || data2026.length !== 12) {
+                    inputEl.classList.add('error');
+                    hintEl.textContent = '错误：2025 和 2026 数组长度均须为 12';
+                    hintEl.classList.add('error-msg');
+                    return;
+                }
+                inputEl.classList.remove('error');
+                hintEl.textContent = defaultHint;
+                hintEl.classList.remove('error-msg');
                 renderChart(data2025, data2026);
                 renderTable(data2025, data2026);
             } catch (e) {
-                console.log("JSON格式错误：", e);
+                inputEl.classList.add('error');
+                hintEl.textContent = 'JSON 格式错误：' + e.message;
+                hintEl.classList.add('error-msg');
             }
         }
 
-        // 绘制双Y轴图表（修复XY轴起始值+美化样式 + 暗黑模式适配）
         function renderChart(data2025, data2026) {
             const ratioData = data2025.map((val, idx) => {
                 const c26 = data2026[idx];
-                return (val && val !== 0 && c26) ? parseFloat(((c26 / val) * 100).toFixed(2)) : null;
+                return (val && val !== 0 && c26 !== null) ? parseFloat((((c26 - val) / val) * 100).toFixed(2)) : null;
             });
 
-            // 计算成本数据最大值，用于优化Y轴刻度分布（起始值固定为0）
-            const allCostData = [...data2025, ...data2026].filter(val => val !== null && val !== undefined);
+            const allCostData = [...data2025, ...data2026].filter(v => v !== null && v !== undefined);
             const maxCost = allCostData.length > 0 ? Math.max(...allCostData) : 2000;
-            // 向上取整到最近的百位，让刻度更规整
-            const yMax = Math.ceil(maxCost / 100) * 100;
+            const minCost = allCostData.length > 0 ? Math.min(...allCostData) : 0;
+            const yMax = Math.ceil(maxCost / 100) * 100 * 1.5; // 预留上方空间给增长率
+            const yMin = Math.max(0, Math.floor(minCost / 100) * 100 - 100);
 
-            // 计算占比数据极值（起始值固定为0）
-            const validRatioData = ratioData.filter(val => val !== null && val !== undefined);
-            const ratioMax = validRatioData.length > 0 ? Math.max(...validRatioData) : 150;
-            // 向上取整，确保占比轴显示完整
+            const validRatioData = ratioData.filter(v => v !== null && v !== undefined);
+            const ratioMax = validRatioData.length > 0 ? Math.max(...validRatioData) : 50;
+            const ratioMin = validRatioData.length > 0 ? Math.min(...validRatioData) : -50;
             const ratioCeil = Math.ceil(ratioMax / 10) * 10;
+            const ratioFloor = Math.floor(ratioMin / 10) * 10;
 
-            // 根据主题设置图表颜色
-            const themeColors = isDarkTheme ? {
-                text: '#e5e7eb',
-                axisLine: '#444',
-                splitLine: '#373750',
-                legendBg: 'rgba(45,45,66,0.8)',
-                tooltipBg: 'rgba(45,45,66,0.95)',
-                tooltipBorder: '#444',
-                chartBg: 'transparent'
+            // 调整增长率轴范围，使其主要在上方显示，避免与成本折线大量重叠
+            const ratioAxisMax = ratioCeil > 0 ? ratioCeil : 50;
+            const ratioAxisMin = ratioFloor - (ratioAxisMax - ratioFloor) * 1.5; // 向下扩展范围，将折线推向上方
+
+            const tc = isDarkTheme ? {
+                text: '#e5e7eb', axisLine: '#4a4a6a', splitLine: '#373750',
+                legendBg: 'rgba(45,45,66,0.9)', tooltipBg: 'rgba(30,30,47,0.97)',
+                tooltipBorder: '#4a4a6a', chartBg: 'transparent'
             } : {
-                text: '#333',
-                axisLine: '#dcdfe6',
-                splitLine: '#f5f7fa',
-                legendBg: 'rgba(248,250,252,0.8)',
-                tooltipBg: 'rgba(255,255,255,0.95)',
-                tooltipBorder: '#e8e8e8',
-                chartBg: 'transparent'
+                text: '#444', axisLine: '#e2e8f0', splitLine: '#f1f5f9',
+                legendBg: 'rgba(255,255,255,0.95)', tooltipBg: 'rgba(255,255,255,0.98)',
+                tooltipBorder: '#e2e8f0', chartBg: 'transparent'
             };
 
+            const borderCol = isDarkTheme ? '#2d2d42' : '#fff';
+
             const option = {
-                // 全局样式优化
-                textStyle: {
-                    fontFamily: "Microsoft YaHei",
-                    color: themeColors.text
-                },
-                // 提示框美化
+                textStyle: { fontFamily: "Microsoft YaHei", color: tc.text },
                 tooltip: {
                     trigger: 'axis',
                     formatter: params => {
                         const i = params[0].dataIndex;
-                        return `${params[0].name}<br/>
-                            <span style="color:#1677ff;">●</span> 2025年：${data2025[i]??"-"} 元<br/>
-                            <span style="color:#36cbcb;">●</span> 2026年：${data2026[i]??"-"} 元<br/>
-                            <span style="color:#ff7d00;">●</span> 占比：${ratioData[i]?ratioData[i]+"%":"-"}`;
+                        return `<b>${params[0].name}</b><br/>
+                            <span style="color:#1677ff;">●</span> 2025年：${data2025[i] ?? "-"} 元<br/>
+                            <span style="color:#36cbcb;">●</span> 2026年：${data2026[i] ?? "-"} 元<br/>
+                            <span style="color:#ff7d00;">●</span> 增长：${ratioData[i] !== null ? ratioData[i] + "%" : "-"}`;
                     },
-                    backgroundColor: themeColors.tooltipBg,
-                    borderColor: themeColors.tooltipBorder,
+                    backgroundColor: tc.tooltipBg,
+                    borderColor: tc.tooltipBorder,
                     borderWidth: 1,
-                    padding: 10,
-                    textStyle: {
-                        fontSize: 12,
-                        color: themeColors.text
-                    },
-                    shadowBlur: 5,
-                    shadowColor: isDarkTheme ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.1)'
+                    padding: 12,
+                    textStyle: { fontSize: 12, color: tc.text },
+                    shadowBlur: 8,
+                    shadowColor: isDarkTheme ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.08)'
                 },
-                // 图例美化
-                legend: { 
-                    data: ['2025年成本','2026年成本','26年占25年占比(%)'], 
-                    top: 10, 
-                    fontSize: 13,
-                    left: 'center',
-                    itemWidth: 15,
-                    itemHeight: 8,
-                    itemGap: 20,
-                    backgroundColor: themeColors.legendBg,
-                    padding: [5, 15],
-                    textStyle: {
-                        color: themeColors.text
-                    }
+                legend: {
+                    data: ['25年成本', '26年成本', '26年同比增长(%)'],
+                    top: 8, left: 'center',
+                    itemWidth: 14, itemHeight: 7, itemGap: 18,
+                    backgroundColor: tc.legendBg,
+                    borderRadius: 4, padding: [5, 14],
+                    textStyle: { color: tc.text, fontSize: 12 }
                 },
-                // X轴修复：显示刻度，起始值正常，样式美化
-                xAxis: { 
-                    type: 'category', 
-                    data: monthList, 
-                    axisLabel: { 
-                        fontSize: 12,
-                        color: themeColors.text,
-                        margin: 10
-                    },
-                    axisLine: { 
-                        lineStyle: { 
-                            color: themeColors.axisLine,
-                            width: 1
-                        } 
-                    },
-                    axisTick: { 
-                        show: true,
-                        lineStyle: {
-                            color: themeColors.axisLine,
-                            width: 1
-                        },
-                        alignWithLabel: true
-                    },
-                    splitLine: {
-                        show: false
-                    }
+                xAxis: {
+                    type: 'category', data: monthList,
+                    axisLabel: { fontSize: 12, color: tc.text, margin: 10 },
+                    axisLine: { lineStyle: { color: tc.axisLine, width: 1 } },
+                    axisTick: { show: true, lineStyle: { color: tc.axisLine }, alignWithLabel: true },
+                    splitLine: { show: false }
                 },
-                // Y轴修复：起始值为0，恢复刻度，美化样式
                 yAxis: [
-                    { 
-                        type: 'value', 
-                        name: '成本（元）', 
-                        position: 'left', 
-                        nameTextStyle: {
-                            fontSize: 12,
-                            color: themeColors.text,
-                            padding: [0, 0, 0, 10]
-                        },
-                        axisLabel: { 
-                            fontSize: 12,
-                            color: themeColors.text,
-                            margin: 8,
-                            formatter: '{value}'
-                        },
-                        // 核心修复：起始值固定为0
-                        min: 0,
-                        max: yMax,
-                        // 优化刻度数量，让显示更合理
-                        splitNumber: 6,
-                        // 网格线优化
-                        splitLine: {
-                            show: true,
-                            lineStyle: { 
-                                color: themeColors.splitLine,
-                                width: 1,
-                                type: 'solid' // 实线网格，更清晰
-                            }
-                        },
-                        // 恢复坐标轴和刻度样式
-                        axisLine: { 
-                            lineStyle: { 
-                                color: themeColors.axisLine,
-                                width: 1
-                            } 
-                        },
-                        axisTick: { 
-                            show: true,
-                            lineStyle: {
-                                color: themeColors.axisLine,
-                                width: 1
-                            }
-                        }
+                    {
+                        type: 'value', name: '成本（元）', position: 'left',
+                        nameTextStyle: { fontSize: 12, color: tc.text, padding: [0, 0, 0, 10] },
+                        axisLabel: { fontSize: 12, color: tc.text, margin: 8, formatter: '{value}' },
+                        min: yMin, max: yMax, splitNumber: 6,
+                        splitLine: { show: true, lineStyle: { color: tc.splitLine, width: 1 } },
+                        axisLine: { lineStyle: { color: tc.axisLine, width: 1 } },
+                        axisTick: { show: true, lineStyle: { color: tc.axisLine } }
                     },
-                    { 
-                        type: 'value', 
-                        name: '占比（%）', 
-                        position: 'right', 
-                        nameTextStyle: {
-                            fontSize: 12,
-                            color: themeColors.text,
-                            padding: [0, 10, 0, 0]
-                        },
-                        axisLabel: { 
-                            fontSize: 12,
-                            color: themeColors.text,
-                            margin: 8,
-                            formatter: '{value}%'
-                        },
-                        // 核心修复：起始值固定为0
-                        min: 0,
-                        max: ratioCeil > 100 ? ratioCeil : 120,
-                        splitNumber: 6,
-                        // 占比轴网格线隐藏，避免重叠
+                    {
+                        type: 'value', name: '增长率（%）', position: 'right',
+                        nameTextStyle: { fontSize: 12, color: tc.text, padding: [0, 10, 0, 0] },
+                        axisLabel: { fontSize: 12, color: tc.text, margin: 8, formatter: '{value}%' },
+                        min: ratioAxisMin, max: ratioAxisMax, splitNumber: 6,
                         splitLine: { show: false },
-                        // 恢复坐标轴和刻度样式
-                        axisLine: { 
-                            lineStyle: { 
-                                color: themeColors.axisLine,
-                                width: 1
-                            } 
-                        },
-                        axisTick: { 
-                            show: true,
-                            lineStyle: {
-                                color: themeColors.axisLine,
-                                width: 1
-                            }
-                        }
+                        axisLine: { lineStyle: { color: tc.axisLine, width: 1 } },
+                        axisTick: { show: true, lineStyle: { color: tc.axisLine } }
                     }
                 ],
-                // 系列样式美化
                 series: [
-                    { 
-                        name: '2025年成本', 
-                        type: 'line', 
-                        yAxisIndex: 0, 
-                        data: data2025, 
-                        smooth: true, 
-                        color: '#1677ff', 
-                        lineStyle: {
-                            width: 2.5,
-                            opacity: 0.9
-                        },
-                        symbol: 'circle',
-                        symbolSize: 6,
-                        symbolOffset: [0, 0],
-                        itemStyle: { 
-                            color: '#1677ff',
-                            borderColor: isDarkTheme ? '#444' : '#fff',
-                            borderWidth: 1.5
-                        },
-                        emphasis: {
-                            symbolSize: 9,
-                            itemStyle: {
-                                shadowBlur: 5,
-                                shadowColor: 'rgba(22,119,255,0.5)'
-                            }
-                        }
+                    {
+                        name: '25年成本', type: 'line', yAxisIndex: 0, data: data2025,
+                        smooth: true, color: '#1677ff',
+                        lineStyle: { width: 2.5 },
+                        symbol: 'circle', symbolSize: 6,
+                        itemStyle: { color: '#1677ff', borderColor: borderCol, borderWidth: 2 },
+                        emphasis: { symbolSize: 9, itemStyle: { shadowBlur: 6, shadowColor: 'rgba(22,119,255,0.5)' } },
+                        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
+                            { offset: 0, color: isDarkTheme ? 'rgba(22,119,255,0.18)' : 'rgba(22,119,255,0.1)' },
+                            { offset: 1, color: 'rgba(22,119,255,0)' }
+                        ]}}
                     },
-                    { 
-                        name: '2026年成本', 
-                        type: 'line', 
-                        yAxisIndex: 0, 
-                        data: data2026, 
-                        smooth: true, 
-                        color: '#36cbcb', 
-                        lineStyle: {
-                            width: 2.5,
-                            opacity: 0.9
-                        },
-                        symbol: 'circle',
-                        symbolSize: 6,
-                        itemStyle: { 
-                            color: '#36cbcb',
-                            borderColor: isDarkTheme ? '#444' : '#fff',
-                            borderWidth: 1.5
-                        },
-                        emphasis: {
-                            symbolSize: 9,
-                            itemStyle: {
-                                shadowBlur: 5,
-                                shadowColor: 'rgba(54,203,203,0.5)'
-                            }
-                        }
+                    {
+                        name: '26年成本', type: 'line', yAxisIndex: 0, data: data2026,
+                        smooth: true, color: '#36cbcb',
+                        lineStyle: { width: 2.5 },
+                        symbol: 'circle', symbolSize: 6,
+                        itemStyle: { color: '#36cbcb', borderColor: borderCol, borderWidth: 2 },
+                        emphasis: { symbolSize: 9, itemStyle: { shadowBlur: 6, shadowColor: 'rgba(54,203,203,0.5)' } },
+                        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
+                            { offset: 0, color: isDarkTheme ? 'rgba(54,203,203,0.14)' : 'rgba(54,203,203,0.07)' },
+                            { offset: 1, color: 'rgba(54,203,203,0)' }
+                        ]}}
                     },
-                    { 
-                        name: '26年占25年占比(%)', 
-                        type: 'line', 
-                        yAxisIndex: 1, 
-                        data: ratioData, 
-                        smooth: true, 
-                        color: '#ff7d00', 
-                        lineStyle: {
-                            width: 2.5,
-                            opacity: 0.9
-                        },
-                        symbol: 'circle',
-                        symbolSize: 6,
-                        itemStyle: { 
-                            color: '#ff7d00',
-                            borderColor: isDarkTheme ? '#444' : '#fff',
-                            borderWidth: 1.5
-                        },
-                        emphasis: {
-                            symbolSize: 9,
-                            itemStyle: {
-                                shadowBlur: 5,
-                                shadowColor: 'rgba(255,125,0,0.5)'
-                            }
-                        }
+                    {
+                        name: '26年同比增长(%)', type: 'line', yAxisIndex: 1, data: ratioData,
+                        smooth: true, color: '#ff7d00',
+                        lineStyle: { width: 2, type: 'dashed' },
+                        symbol: 'circle', symbolSize: 5,
+                        itemStyle: { color: '#ff7d00', borderColor: borderCol, borderWidth: 2 },
+                        emphasis: { symbolSize: 8, itemStyle: { shadowBlur: 6, shadowColor: 'rgba(255,125,0,0.5)' } }
                     }
                 ],
-                // 图表内边距优化
-                grid: { 
-                    top: 60, 
-                    left: 70, 
-                    right: 70, 
-                    bottom: 40,
-                    containLabel: true
-                },
-                // 背景色优化
-                backgroundColor: themeColors.chartBg,
-                // 动画效果
-                animationDuration: 1000,
+                grid: { top: 55, left: 65, right: 65, bottom: 35, containLabel: true },
+                backgroundColor: tc.chartBg,
+                animationDuration: 800,
                 animationEasing: 'cubicOut'
             };
-            myChart.setOption(option);
+            myChart.setOption(option, true);
         }
 
-        // 绘制占比表格（优化样式）
         function renderTable(data2025, data2026) {
-            let html = `<table class="w-full border-collapse text-sm"><thead><tr style="background:#f8f9fa;">
-                <th class="border border-gray-200 p-2 text-center" style="font-size:12px; font-weight:600; color:#333;">月份</th>
-                <th class="border border-gray-200 p-2 text-center" style="font-size:12px; font-weight:600; color:#333;">2025年</th>
-                <th class="border border-gray-200 p-2 text-center" style="font-size:12px; font-weight:600; color:#333;">2026年</th>
-                <th class="border border-gray-200 p-2 text-center" style="font-size:12px; font-weight:600; color:#333;">同比占比</th>
-            </tr></thead><tbody>`;
-            
+            const total25 = parseFloat(data2025.reduce((s, v) => s + (v || 0), 0).toFixed(2));
+            const total26 = parseFloat(data2026.reduce((s, v) => s + (v || 0), 0).toFixed(2));
+            const totalRatio = total25 > 0 ? (((total26 - total25) / total25) * 100).toFixed(2) : null;
+            const totalCls = totalRatio !== null ? (parseFloat(totalRatio) >= 0 ? 'text-red-600 dark:text-red-400 font-bold' : 'text-green-600 dark:text-green-400 font-bold') : 'text-gray-400 dark:text-gray-500';
+
+            let html = `<table class="w-full border-collapse text-sm">
+                <thead><tr class="bg-gray-50 dark:bg-gray-800">
+                    <th class="border border-gray-200 dark:border-gray-700 p-2 text-center text-gray-600 dark:text-gray-300 font-semibold" style="font-size:12px;">月份</th>
+                    <th class="border border-gray-200 dark:border-gray-700 p-2 text-center text-gray-600 dark:text-gray-300 font-semibold" style="font-size:12px;">2025年</th>
+                    <th class="border border-gray-200 dark:border-gray-700 p-2 text-center text-gray-600 dark:text-gray-300 font-semibold" style="font-size:12px;">2026年</th>
+                    <th class="border border-gray-200 dark:border-gray-700 p-2 text-center text-gray-600 dark:text-gray-300 font-semibold" style="font-size:12px;">同比增长</th>
+                </tr></thead><tbody>`;
+
             monthList.forEach((m, i) => {
                 const c25 = data2025[i], c26 = data2026[i];
-                let r = "-", cls = "text-gray-500";
-                if (c25 && c25!==0 && c26) {
-                    const v = (c26/c25*100).toFixed(2);
-                    r = v+"%"; 
-                    cls = v>=100 ? "text-red-600 font-bold" : "text-green-600 font-bold";
+                let r = "-", cls = "text-gray-400 dark:text-gray-500";
+                if (c25 && c25 !== 0 && c26 !== null) {
+                    const v = ((c26 - c25) / c25 * 100).toFixed(2);
+                    r = v + "%";
+                    cls = parseFloat(v) >= 0 ? "text-red-600 dark:text-red-400 font-bold" : "text-green-600 dark:text-green-400 font-bold";
                 }
-                html += `<tr class="hover:bg-f0f2f5 transition-colors">
-                    <td class="border border-gray-200 p-2 text-center" style="font-size:12px; color:#666;">${m}</td>
-                    <td class="border border-gray-200 p-2 text-center" style="font-size:12px; color:#666;">${c25??"-"}</td>
-                    <td class="border border-gray-200 p-2 text-center" style="font-size:12px; color:#666;">${c26??"-"}</td>
-                    <td class="border border-gray-200 p-2 text-center ${cls}" style="font-size:12px;">${r}</td>
+                html += `<tr class="hover:bg-blue-50 dark:hover:bg-gray-700/50 transition-colors">
+                    <td class="border border-gray-200 dark:border-gray-700 p-2 text-center text-gray-500 dark:text-gray-400" style="font-size:12px;">${m}</td>
+                    <td class="border border-gray-200 dark:border-gray-700 p-2 text-center text-gray-500 dark:text-gray-400" style="font-size:12px;">${c25 ?? "-"}</td>
+                    <td class="border border-gray-200 dark:border-gray-700 p-2 text-center text-gray-500 dark:text-gray-400" style="font-size:12px;">${c26 ?? "-"}</td>
+                    <td class="border border-gray-200 dark:border-gray-700 p-2 text-center ${cls}" style="font-size:12px;">${r}</td>
                 </tr>`;
             });
+
+            html += `<tr class="border-t-2 border-gray-200 dark:border-gray-600">
+                <td class="border border-gray-200 dark:border-gray-700 p-2 text-center font-bold text-gray-700 dark:text-gray-200" style="font-size:12px;">合计</td>
+                <td class="border border-gray-200 dark:border-gray-700 p-2 text-center font-bold text-gray-700 dark:text-gray-200" style="font-size:12px;">${total25 || "-"}</td>
+                <td class="border border-gray-200 dark:border-gray-700 p-2 text-center font-bold text-gray-700 dark:text-gray-200" style="font-size:12px;">${total26 || "-"}</td>
+                <td class="border border-gray-200 dark:border-gray-700 p-2 text-center ${totalCls}" style="font-size:12px;">${totalRatio ? totalRatio + '%' : '-'}</td>
+            </tr>`;
+
             html += `</tbody></table>`;
             document.getElementById('ratioTable').innerHTML = html;
         }
 
-        // 窗口缩放时刷新图表和布局
         window.addEventListener('resize', () => {
-            myChart.resize();
-            // 若未手动调整布局，窗口缩放时保持30%/70%比例
-            if(!localStorage.getItem(STORAGE_KEY)) {
-                const topPanelHeight = `calc(70vh - 60px)`;
-                const bottomPanelHeight = `calc(30vh - 20px)`;
-                
-                document.getElementById('panel2').style.width = `calc(50vw - 15px)`;
-                document.getElementById('panel2').style.height = topPanelHeight;
-                // 核心修改：窗口缩放时右侧面板left也保持calc(50vw + 10px)
-                document.getElementById('panel3').style.left = `calc(50vw + 10px)`;
-                document.getElementById('panel3').style.width = `calc(50vw - 15px)`;
-                document.getElementById('panel3').style.height = topPanelHeight;
-                document.getElementById('panel1').style.top = `calc(70vh)`;
-                document.getElementById('panel1').style.width = `calc(100vw - 20px)`;
-                document.getElementById('panel1').style.height = bottomPanelHeight;
+            if (!isMobile() && !localStorage.getItem(STORAGE_KEY)) {
+                document.getElementById('panel2').style.width = 'calc(50vw - 15px)';
+                document.getElementById('panel2').style.height = 'calc(70vh - 60px)';
+                document.getElementById('panel3').style.left = 'calc(50vw + 10px)';
+                document.getElementById('panel3').style.width = 'calc(50vw - 15px)';
+                document.getElementById('panel3').style.height = 'calc(70vh - 60px)';
+                document.getElementById('panel1').style.top = 'calc(70vh)';
+                document.getElementById('panel1').style.width = 'calc(100vw - 20px)';
+                document.getElementById('panel1').style.height = 'calc(30vh - 20px)';
             }
         });
     </script>
