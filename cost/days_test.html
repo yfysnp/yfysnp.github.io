@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>日维度成本/用量分析</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/interactjs/dist/interact.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tailwindcss@3.3.0/dist/tailwind.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/zh.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: "Microsoft YaHei", sans-serif; 
+            background: #f5f7fa; 
+            padding: 10px;
+            overflow-x: hidden;
+            height: 100vh;
+            margin: 0;
+            transition: background 0.3s ease;
+        }
+
+        /* 暗黑模式 */
+        body.dark {
+            background: #1e1e2f;
+            color: #e5e7eb;
+        }
+        
+        /* 标题区域 */
+        .title-container {
+            position: relative;
+            background: #f5f7fa;
+            padding: 5px 0;
+            margin-bottom: 10px;
+            height: 40px;
+            transition: background 0.3s ease;
+        }
+        body.dark .title-container { background: #1e1e2f; }
+
+        .main-title {
+            font-size: 20px;
+            font-weight: 600;
+            text-align: center;
+            color: #333;
+            line-height: 40px;
+            transition: color 0.3s ease;
+        }
+        body.dark .main-title { color: #e5e7eb; }
+
+        /* 按钮/输入框容器 */
+        .btn-container, .date-picker-container, .product-input-container {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .date-picker-container { left: 10px; }
+        .product-input-container { left: 220px; }
+        .btn-container { right: 10px; }
+
+        .input-label { font-size: 12px; color: #555; }
+        body.dark .input-label { color: #d1d5db; }
+
+        /* 输入框样式 */
+        .custom-input {
+            padding: 4px 8px;
+            border-radius: 3px;
+            border: 1px thead #dcdfe6;
+            font-size: 12px;
+            width: 80px;
+            transition: all 0.3s ease;
+            outline: none;
+        }
+        .custom-input:focus {
+            border-color: #1677ff;
+            box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.2);
+        }
+        #startDatePicker.custom-input { width: 120px; }
+        body.dark .custom-input {
+            background: #373750;
+            border-color: #444;
+            color: #e5e7eb;
+        }
+
+        /* 日期选择器层级 */
+        .flatpickr-calendar { z-index: 9999 !important; }
+        body.dark .flatpickr-calendar {
+            background: #2d2d42 !important;
+            border-color: #444 !important;
+        }
+        body.dark .flatpickr-day { color: #e5e7eb !important; }
+        body.dark .flatpickr-day:hover { background: #373750 !important; }
+        body.dark .flatpickr-day.selected { background: #1677ff !important; color: white !important; }
+
+        /* 通用按钮 */
+        .common-btn {
+            padding: 4px 10px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+        .reset-btn { background: #1677ff; color: white; }
+        .reset-btn:hover { background: #0f62d9; }
+        .theme-toggle-btn { background: #666; color: white; }
+        .theme-toggle-btn:hover { background: #444; }
+        .copy-btn { background: #00b42a; color: white; }
+        .copy-btn:hover { background: #009a25; }
+        .clear-btn { background: #ff7d00; color: white; }
+        .clear-btn:hover { background: #e67000; }
+        body.dark .reset-btn { background: #2563eb; }
+        body.dark .theme-toggle-btn { background: #374151; }
+        body.dark .copy-btn { background: #10b981; }
+        body.dark .clear-btn { background: #f97316; }
+
+        /* 拖拽面板（核心样式：文本框100%填充） */
+        .draggable-panel {
+            position: absolute;
+            background: white;
+            padding: 8px;
+            border-radius: 4px;
+            box-shadow: 0 1px 6px rgba(0,0,0,0.08);
+            min-width: 300px;
+            resize: both;
+            overflow: hidden;
+            z-index: 10;
+            border: 1px solid #e8e8e8;
+            transition: all 0.3s ease;
+            display: flex;
+            flex-direction: column;
+        }
+        body.dark .draggable-panel {
+            background: #2d2d42;
+            border: 1px solid #444;
+        }
+        .panel-header {
+            cursor: move;
+            padding: 4px 0;
+            margin-bottom: 8px;
+            user-select: none;
+            font-size: 14px;
+            color: #555;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+        body.dark .panel-header { color: #d1d5db; }
+        .panel-content {
+            flex: 1;
+            width: 100%;
+            overflow: hidden;
+        }
+        #jsonInput, #mainChart {
+            width: 100% !important;
+            height: 100% !important;
+            border: 1px solid #dcdfe6;
+            border-radius: 3px;
+            padding: 8px;
+            font-family: monospace;
+            font-size: 12px;
+            resize: none;
+            transition: all 0.3s ease;
+        }
+        body.dark #jsonInput {
+            background: #373750;
+            color: #e5e7eb;
+            border-color: #444;
+        }
+
+        /* 提示框 */
+        .error-tip {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 8px 16px;
+            background: #ff4d4f;
+            color: white;
+            border-radius: 4px;
+            font-size: 12px;
+            z-index: 9999;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        body.dark .error-tip { background: #ef4444; }
+        .error-tip.show { opacity: 1; }
+    </style>
+</head>
+<body>
+    <div class="relative min-h-[calc(100vh-20px)]" id="panelContainer">
+        <div class="title-container">
+            <div class="date-picker-container">
+                <span class="input-label">开始日期：</span>
+                <input type="text" id="startDatePicker" class="flatpickr-input custom-input">
+            </div>
+            
+            <div class="product-input-container {
+                position: absolute;
+                top: 50%;
+                left: 220px;
+                transform: translateY(-50%);
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }">
+                <span class="input-label">产品：</span>
+                <input type="text" id="productNameInput" class="custom-input" placeholder="如：日志">
+            </div>
+            
+            <h1 class="main-title" id="mainTitle">日维度成本/用量分析</h1>
+            
+            <div class="btn-container">
+                <button class="common-btn copy-btn" id="copyLinkBtn">复制分享链接</button>
+                <button class="common-btn clear-btn" id="clearDataBtn">清空数据</button>
+                <button class="common-btn theme-toggle-btn" id="themeToggleBtn">切换暗黑模式</button>
+                <button class="common-btn reset-btn" id="resetLayoutBtn">重置布局</button>
+            </div>
+        </div>
+
+        <!-- 图表面板 -->
+        <div class="draggable-panel" id="chartPanel" style="left:10px; top:50px; width:calc(100vw - 20px); height:calc(70vh - 60px); z-index:12;">
+            <h2 class="panel-header">📈 日维度用量折线图</h2>
+            <div class="panel-content">
+                <div id="mainChart"></div>
+            </div>
+        </div>
+
+        <!-- 数据录入面板 -->
+        <div class="draggable-panel" id="jsonPanel" style="left:10px; top:calc(70vh); width:calc(100vw - 20px); height:calc(30vh - 20px); z-index:11;">
+            <h2 class="panel-header">📝 用量数据录入（每行一个数字，修改后自动刷新）</h2>
+            <div class="panel-content">
+                <textarea id="jsonInput"></textarea>
+            </div>
+        </div>
+    </div>
+    <div class="error-tip" id="errorTip"></div>
+
+    <script>
+        // 初始化图表
+        const myChart = echarts.init(document.getElementById('mainChart'));
+        let productName = '';
+        
+        // ============== 默认日期 = 当前日期 - 15天 ==============
+        const getDefaultStartDate = () => {
+            const date = new Date();
+            date.setDate(date.getDate() - 15);
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        };
+        let startDate = getDefaultStartDate();
+        // ======================================================
+
+        // 默认数据
+        const DEFAULT_DATA = `20442
+20629
+19180
+18713
+18466
+18382
+18382
+18373
+18466
+18549
+18532
+18526
+18344
+18306`;
+
+        // 防抖函数
+        const debounce = (func, delay = 300) => {
+            let timer = null;
+            return (...args) => {
+                clearTimeout(timer);
+                timer = setTimeout(() => func(...args), delay);
+            };
+        };
+
+        // 提示框
+        const showError = (msg) => {
+            const tip = document.getElementById('errorTip');
+            tip.textContent = msg;
+            tip.classList.add('show');
+            setTimeout(() => tip.classList.remove('show'), 2000);
+        };
+
+        // 解析URL参数
+        const getUrlParams = () => {
+            const p = new URLSearchParams(location.search);
+            return { date: p.get('date'), product: p.get('product'), data: p.get('data') };
+        };
+
+        // 数据编码/解码
+        const decodeUsageData = (d) => d ? decodeURIComponent(d).split(',').join('\n') : DEFAULT_DATA;
+        const encodeUsageData = (t) => encodeURIComponent(t.split('\n').filter(l => l.trim()));
+
+        // 生成日期标签
+        const generateDateLabels = (start, count) => {
+            const labels = [];
+            const date = new Date(start);
+            for (let i = 0; i < count; i++) {
+                labels.push(`${date.getMonth() + 1}月${date.getDate()}日`);
+                date.setDate(date.getDate() + 1);
+            }
+            return labels;
+        };
+
+        // 更新页面主标题
+        const updateTitle = (dateStr, pName) => {
+            const date = new Date(dateStr);
+            const title = `日维度${pName.trim()}成本/用量分析（${date.getMonth() + 1}月${date.getDate()}日起）`;
+            document.getElementById('mainTitle').textContent = title;
+        };
+
+        // 主题切换
+        let isDark = localStorage.getItem('dark') === 'true';
+        const initTheme = () => {
+            document.body.classList.toggle('dark', isDark);
+            document.getElementById('themeToggleBtn').textContent = isDark ? '切换浅色' : '切换暗黑';
+        };
+
+        // 布局存储/加载/重置
+        const LAYOUT_KEY = 'dashboard_layout';
+        const saveLayout = () => {
+            const data = {};
+            document.querySelectorAll('.draggable-panel').forEach(el => {
+                data[el.id] = { x: el.dataset.x || 0, y: el.dataset.y || 0, w: el.style.width, h: el.style.height };
+            });
+            localStorage.setItem(LAYOUT_KEY, JSON.stringify(data));
+        };
+        const loadLayout = () => {
+            try {
+                const data = JSON.parse(localStorage.getItem(LAYOUT_KEY));
+                if (!data) return;
+                Object.keys(data).forEach(id => {
+                    const el = document.getElementById(id);
+                    if (!el) return;
+                    el.style.width = data[id].w;
+                    el.style.height = data[id].h;
+                    el.dataset.x = data[id].x;
+                    el.dataset.y = data[id].y;
+                    el.style.transform = `translate(${data[id].x}px,${data[id].y}px)`;
+                });
+                myChart.resize();
+            } catch { localStorage.removeItem(LAYOUT_KEY); }
+        };
+        const resetLayout = () => {
+            localStorage.removeItem(LAYOUT_KEY);
+            const defaultLayout = {
+                chartPanel: { left: '10px', top: '50px', w: 'calc(100vw - 20px)', h: 'calc(70vh - 60px)', z: 12 },
+                jsonPanel: { left: '10px', top: 'calc(70vh)', w: 'calc(100vw - 20px)', h: 'calc(30vh - 20px)', z: 11 }
+            };
+            Object.keys(defaultLayout).forEach(id => {
+                const el = document.getElementById(id);
+                el.style.left = defaultLayout[id].left;
+                el.style.top = defaultLayout[id].top;
+                el.style.width = defaultLayout[id].w;
+                el.style.height = defaultLayout[id].h;
+                el.style.zIndex = defaultLayout[id].z;
+                delete el.dataset.x; delete el.dataset.y;
+                el.style.transform = 'translate(0,0)';
+            });
+            myChart.resize();
+            showError('布局已重置');
+        };
+
+        // 功能按钮
+        const copyLink = () => {
+            const url = `${location.origin}${location.pathname}?date=${startDate}&product=${encodeURIComponent(productName)}&data=${encodeUsageData(document.getElementById('jsonInput').value)}`;
+            navigator.clipboard.writeText(url).then(() => showError('复制成功')).catch(() => showError('复制失败'));
+        };
+        const clearData = () => {
+            document.getElementById('jsonInput').value = '';
+            renderChart();
+            showError('数据已清空');
+        };
+
+        // 面板置顶
+        document.querySelectorAll('.draggable-panel').forEach(panel => {
+            panel.addEventListener('mousedown', () => {
+                document.querySelectorAll('.draggable-panel').forEach(p => p.style.zIndex = 10);
+                panel.style.zIndex = 20;
+            });
+        });
+
+        // 拖拽缩放
+        interact('.draggable-panel').draggable({
+            modifiers: [interact.modifiers.restrictRect({ restriction: 'body' })],
+            listeners: {
+                move(e) {
+                    const t = e.target;
+                    t.dataset.x = (parseFloat(t.dataset.x) || 0) + e.dx;
+                    t.dataset.y = (parseFloat(t.dataset.y) || 0) + e.dy;
+                    t.style.transform = `translate(${t.dataset.x}px,${t.dataset.y}px)`;
+                    myChart.resize();
+                },
+                end: saveLayout
+            }
+        }).resizable({
+            edges: { left: true, right: true, top: true, bottom: true },
+            listeners: {
+                move(e) {
+                    const t = e.target;
+                    t.style.width = e.rect.width + 'px';
+                    t.style.height = e.rect.height + 'px';
+                    t.dataset.x = (parseFloat(t.dataset.x) || 0) + e.deltaRect.left;
+                    t.dataset.y = (parseFloat(t.dataset.y) || 0) + e.deltaRect.top;
+                    t.style.transform = `translate(${t.dataset.x}px,${t.dataset.y}px)`;
+                    myChart.resize();
+                },
+                end: saveLayout
+            }
+        });
+
+        // 解析文本框数据
+        const parseData = (text) => {
+            return text.split('\n').map(line => line.trim()).filter(line => !isNaN(line) && line).map(Number);
+        };
+
+        // ============== 核心：渲染图表（新增图表标题联动） ==============
+        function renderChart() {
+            const text = document.getElementById('jsonInput').value;
+            const data = parseData(text);
+            if (data.length === 0) { myChart.clear(); return; }
+
+            const labels = generateDateLabels(startDate, data.length);
+            const max = Math.max(...data);
+            const min = Math.min(...data);
+            const colors = isDark ? {
+                text: '#e5e7eb', line: '#36cbcb', bg: 'rgba(45,45,66,0.95)'
+            } : {
+                text: '#333', line: '#1677ff', bg: 'rgba(255,255,255,0.95)'
+            };
+
+            const option = {
+                // 图表标题：实时联动产品名称
+                title: {
+                    text: productName ? `${productName}日维度用量趋势` : '日维度用量趋势',
+                    left: 'center',
+                    textStyle: { color: colors.text, fontSize: 16 }
+                },
+                textStyle: { fontFamily: 'Microsoft YaHei', color: colors.text },
+                tooltip: { trigger: 'axis', backgroundColor: colors.bg, textStyle: { color: colors.text } },
+                legend: { data: ['日用量'], textStyle: { color: colors.text } },
+                xAxis: { type: 'category', data: labels, axisLabel: { color: colors.text, rotate: 30 } },
+                yAxis: { type: 'value', min: Math.floor(min / 100) * 100 - 500, max: Math.ceil(max / 100) * 100 + 500, axisLabel: { color: colors.text } },
+                series: [{
+                    name: '日用量', type: 'line', smooth: true, data: data, color: colors.line,
+                    areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: colors.line + '30' },
+                        { offset: 1, color: colors.line + '00' }
+                    ])}
+                }]
+            };
+            myChart.setOption(option);
+        }
+        // ==============================================================
+
+        // 数据输入自动刷新
+        const refreshChart = debounce(renderChart);
+
+        // 页面初始化
+        window.onload = () => {
+            const params = getUrlParams();
+            if (params.date) startDate = params.date;
+            if (params.product) {
+                productName = decodeURIComponent(params.product);
+                document.getElementById('productNameInput').value = productName;
+            }
+
+            // 赋值默认数据
+            document.getElementById('jsonInput').value = decodeUsageData(params.data);
+            
+            // 初始化日期选择器
+            flatpickr('#startDatePicker', {
+                defaultDate: startDate, dateFormat: 'Y-m-d', locale: 'zh',
+                onChange: (_, dateStr) => { 
+                    startDate = dateStr; 
+                    updateTitle(dateStr, productName); 
+                    renderChart(); // 日期切换同步更新图表标题
+                }
+            });
+            
+            // ============== 产品输入：实时更新双标题 ==============
+            document.getElementById('productNameInput').addEventListener('input', function () {
+                productName = this.value;
+                updateTitle(startDate, productName); // 更新页面标题
+                renderChart(); // 同步更新图表标题
+            });
+            // ======================================================
+            
+            // 按钮事件
+            document.getElementById('themeToggleBtn').onclick = () => { isDark = !isDark; localStorage.setItem('dark', isDark); initTheme(); renderChart(); };
+            document.getElementById('resetLayoutBtn').onclick = resetLayout;
+            document.getElementById('copyLinkBtn').onclick = copyLink;
+            document.getElementById('clearDataBtn').onclick = clearData;
+            document.getElementById('jsonInput').addEventListener('input', refreshChart);
+
+            // 初始化渲染
+            updateTitle(startDate, productName);
+            initTheme();
+            loadLayout();
+            renderChart();
+        };
+
+        // 窗口缩放
+        window.addEventListener('resize', debounce(() => myChart.resize(), 500));
+    </script>
+</body>
+</html>
