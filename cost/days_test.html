@@ -27,30 +27,37 @@
             color: #e5e7eb;
         }
         
-        /* ========== 核心修复：顶部布局重构，适配全平台 ========== */
+        /* ========== 顶部容器优化：全宽度不换行，高度稳定 ========== */
         .title-container {
             background: #f5f7fa;
-            padding: 8px 10px;
-            margin-bottom: 10px;
+            padding: 10px 12px;
+            margin-bottom: 12px;
             border-radius: 4px;
             transition: background 0.3s ease;
             display: flex;
-            flex-wrap: wrap;
-            justify-content: space-between;
             align-items: center;
-            gap: 8px;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: nowrap;
+            width: 100%;
         }
         body.dark .title-container { background: #1e1e2f; }
 
-        /* 左侧输入区 */
+        /* 左侧输入区：禁止压缩换行 */
         .input-group {
             display: flex;
             align-items: center;
-            gap: 12px;
-            flex-wrap: wrap;
+            gap: 16px;
+            flex-shrink: 0;
+        }
+        .input-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
         }
 
-        /* 中间主标题 */
+        /* 中间主标题：自适应压缩 */
         .main-title {
             font-size: 18px;
             font-weight: 600;
@@ -59,19 +66,22 @@
             line-height: 1.4;
             transition: color 0.3s ease;
             flex: 1;
-            min-width: 280px;
+            min-width: 240px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         body.dark .main-title { color: #e5e7eb; }
 
-        /* 右侧按钮区 */
+        /* 右侧按钮区：禁止压缩换行 */
         .btn-container {
             display: flex;
             align-items: center;
             gap: 8px;
-            flex-wrap: wrap;
+            flex-shrink: 0;
         }
 
-        .input-label { font-size: 12px; color: #555; }
+        .input-label { font-size: 13px; color: #555; }
         body.dark .input-label { color: #d1d5db; }
 
         /* 输入框样式 */
@@ -107,7 +117,7 @@
 
         /* 通用按钮 */
         .common-btn {
-            padding: 6px 12px;
+            padding: 7px 14px;
             border: none;
             border-radius: 4px;
             cursor: pointer;
@@ -129,7 +139,7 @@
         body.dark .copy-btn { background: #10b981; }
         body.dark .clear-btn { background: #f97316; }
 
-        /* 拖拽面板 */
+        /* 拖拽面板：核心修复，默认位置动态适配 */
         .draggable-panel {
             position: absolute;
             background: white;
@@ -200,6 +210,19 @@
         body.dark .error-tip { background: #ef4444; }
         .error-tip.show { opacity: 1; }
 
+        /* ========== 平板/中等宽度适配（768px-1400px） ========== */
+        @media screen and (max-width: 1400px) {
+            .title-container {
+                gap: 8px;
+                padding: 8px 10px;
+            }
+            .input-group { gap: 10px; }
+            .main-title { font-size: 17px; min-width: 200px; }
+            .common-btn { padding: 6px 10px; font-size: 13px; }
+            .custom-input { font-size: 13px; }
+            .input-label { font-size: 12px; }
+        }
+
         /* ========== 移动端专属适配（屏幕宽度<768px） ========== */
         @media screen and (max-width: 768px) {
             body { padding: 8px; }
@@ -208,6 +231,7 @@
                 align-items: stretch;
                 gap: 10px;
                 padding: 10px;
+                flex-wrap: wrap;
             }
             .input-group {
                 justify-content: space-between;
@@ -238,19 +262,21 @@
             #startDatePicker.custom-input { flex: 1.5; }
             .input-label { font-size: 13px; }
 
-            /* 移动端面板默认尺寸，避免溢出 */
+            /* 移动端面板默认尺寸，保证不溢出 */
             #chartPanel {
                 left: 8px !important;
                 top: auto !important;
                 width: calc(100vw - 16px) !important;
                 height: 50vh !important;
+                position: relative !important;
+                margin-bottom: 8px;
             }
             #jsonPanel {
                 left: 8px !important;
                 top: auto !important;
                 width: calc(100vw - 16px) !important;
                 height: 35vh !important;
-                margin-top: 8px;
+                position: relative !important;
             }
             .panel-header { font-size: 15px; }
             #jsonInput, #mainChart { font-size: 13px; }
@@ -268,9 +294,9 @@
     </style>
 </head>
 <body>
-    <div class="relative min-h-[calc(100vh-20px)]" id="panelContainer">
+    <div class="relative" id="panelContainer">
         <!-- 重构后的顶部容器 -->
-        <div class="title-container">
+        <div class="title-container" id="titleContainer">
             <!-- 左侧输入区 -->
             <div class="input-group">
                 <div class="input-item">
@@ -296,7 +322,7 @@
         </div>
 
         <!-- 图表面板 -->
-        <div class="draggable-panel" id="chartPanel" style="left:10px; top:80px; width:calc(100vw - 20px); height:calc(70vh - 80px); z-index:12;">
+        <div class="draggable-panel" id="chartPanel">
             <h2 class="panel-header">📈 用量趋势图表</h2>
             <div class="panel-content">
                 <div id="mainChart"></div>
@@ -304,7 +330,7 @@
         </div>
 
         <!-- 数据录入面板 -->
-        <div class="draggable-panel" id="jsonPanel" style="left:10px; top:calc(70vh); width:calc(100vw - 20px); height:calc(30vh - 20px); z-index:11;">
+        <div class="draggable-panel" id="jsonPanel">
             <h2 class="panel-header">📝 用量数据录入（每行一个数字，修改后自动刷新）</h2>
             <div class="panel-content">
                 <textarea id="jsonInput"></textarea>
@@ -397,20 +423,69 @@
             document.getElementById('themeToggleBtn').textContent = isDark ? '切换浅色' : '切换暗黑';
         };
 
-        // 布局存储/加载/重置
+        // ========== 核心修复：动态计算面板位置，保证不消失 ==========
         const LAYOUT_KEY = 'dashboard_layout';
+        // 获取顶部容器高度
+        const getTitleHeight = () => {
+            return document.getElementById('titleContainer').offsetHeight + 10;
+        };
+        // 初始化/重置面板默认位置
+        const initPanelPosition = () => {
+            const isMobile = window.innerWidth <= 768;
+            const titleHeight = getTitleHeight();
+            const windowHeight = window.innerHeight;
+            // 移动端用相对定位，PC端用绝对定位
+            if (isMobile) {
+                document.getElementById('chartPanel').style.position = 'relative';
+                document.getElementById('jsonPanel').style.position = 'relative';
+                return;
+            }
+            // PC端固定位置，保证两个面板都在可视区域
+            document.getElementById('chartPanel').style.position = 'absolute';
+            document.getElementById('jsonPanel').style.position = 'absolute';
+            // 图表面板：顶部+高度65%
+            const chartPanel = document.getElementById('chartPanel');
+            chartPanel.style.left = '10px';
+            chartPanel.style.top = `${titleHeight}px`;
+            chartPanel.style.width = `calc(100vw - 20px)`;
+            chartPanel.style.height = `calc(${windowHeight * 0.65}px - ${titleHeight}px)`;
+            chartPanel.style.zIndex = 12;
+            // 数据面板：图表下方，高度30%
+            const jsonPanel = document.getElementById('jsonPanel');
+            jsonPanel.style.left = '10px';
+            jsonPanel.style.top = `${windowHeight * 0.65 + 10}px`;
+            jsonPanel.style.width = `calc(100vw - 20px)`;
+            jsonPanel.style.height = `calc(${windowHeight * 0.3}px - 30px)`;
+            jsonPanel.style.zIndex = 11;
+            // 重置transform
+            chartPanel.removeAttribute('data-x');
+            chartPanel.removeAttribute('data-y');
+            chartPanel.style.transform = 'translate(0,0)';
+            jsonPanel.removeAttribute('data-x');
+            jsonPanel.removeAttribute('data-y');
+            jsonPanel.style.transform = 'translate(0,0)';
+            // 图表自适应
+            myChart.resize();
+        };
+
+        // 保存布局（仅PC端）
         const saveLayout = () => {
-            // 移动端不保存布局，避免适配错乱
             if (window.innerWidth > 768) {
                 const data = {};
                 document.querySelectorAll('.draggable-panel').forEach(el => {
-                    data[el.id] = { x: el.dataset.x || 0, y: el.dataset.y || 0, w: el.style.width, h: el.style.height };
+                    data[el.id] = { 
+                        x: el.dataset.x || 0, 
+                        y: el.dataset.y || 0, 
+                        w: el.style.width, 
+                        h: el.style.height 
+                    };
                 });
                 localStorage.setItem(LAYOUT_KEY, JSON.stringify(data));
             }
         };
+
+        // 加载布局（仅PC端）
         const loadLayout = () => {
-            // 移动端不加载保存的布局，强制使用适配布局
             if (window.innerWidth <= 768) return;
             try {
                 const data = JSON.parse(localStorage.getItem(LAYOUT_KEY));
@@ -425,29 +500,16 @@
                     el.style.transform = `translate(${data[id].x}px,${data[id].y}px)`;
                 });
                 myChart.resize();
-            } catch { localStorage.removeItem(LAYOUT_KEY); }
+            } catch { 
+                localStorage.removeItem(LAYOUT_KEY);
+                initPanelPosition();
+            }
         };
+
+        // 重置布局
         const resetLayout = () => {
             localStorage.removeItem(LAYOUT_KEY);
-            const isMobile = window.innerWidth <= 768;
-            const defaultLayout = isMobile ? {
-                chartPanel: { left: '8px', top: 'auto', w: 'calc(100vw - 16px)', h: '50vh', z: 12 },
-                jsonPanel: { left: '8px', top: 'auto', w: 'calc(100vw - 16px)', h: '35vh', z: 11 }
-            } : {
-                chartPanel: { left: '10px', top: '80px', w: 'calc(100vw - 20px)', h: 'calc(70vh - 80px)', z: 12 },
-                jsonPanel: { left: '10px', top: 'calc(70vh)', w: 'calc(100vw - 20px)', h: 'calc(30vh - 20px)', z: 11 }
-            };
-            Object.keys(defaultLayout).forEach(id => {
-                const el = document.getElementById(id);
-                el.style.left = defaultLayout[id].left;
-                el.style.top = defaultLayout[id].top;
-                el.style.width = defaultLayout[id].w;
-                el.style.height = defaultLayout[id].h;
-                el.style.zIndex = defaultLayout[id].z;
-                delete el.dataset.x; delete el.dataset.y;
-                el.style.transform = 'translate(0,0)';
-            });
-            myChart.resize();
+            initPanelPosition();
             showError('布局已重置');
         };
 
@@ -470,36 +532,41 @@
             });
         });
 
-        // 拖拽缩放（PC端生效，移动端禁用，避免误触）
-        if (window.innerWidth > 768) {
-            interact('.draggable-panel').draggable({
-                modifiers: [interact.modifiers.restrictRect({ restriction: 'body' })],
-                listeners: {
-                    move(e) {
-                        const t = e.target;
-                        t.dataset.x = (parseFloat(t.dataset.x) || 0) + e.dx;
-                        t.dataset.y = (parseFloat(t.dataset.y) || 0) + e.dy;
-                        t.style.transform = `translate(${t.dataset.x}px,${t.dataset.y}px)`;
-                        myChart.resize();
-                    },
-                    end: saveLayout
-                }
-            }).resizable({
-                edges: { left: true, right: true, top: true, bottom: true },
-                listeners: {
-                    move(e) {
-                        const t = e.target;
-                        t.style.width = e.rect.width + 'px';
-                        t.style.height = e.rect.height + 'px';
-                        t.dataset.x = (parseFloat(t.dataset.x) || 0) + e.deltaRect.left;
-                        t.dataset.y = (parseFloat(t.dataset.y) || 0) + e.deltaRect.top;
-                        t.style.transform = `translate(${t.dataset.x}px,${t.dataset.y}px)`;
-                        myChart.resize();
-                    },
-                    end: saveLayout
-                }
-            });
-        }
+        // 拖拽缩放（仅PC端生效，避免移动端误触）
+        const initDrag = () => {
+            if (window.innerWidth > 768) {
+                interact('.draggable-panel').draggable({
+                    modifiers: [interact.modifiers.restrictRect({ restriction: 'body' })],
+                    listeners: {
+                        move(e) {
+                            const t = e.target;
+                            t.dataset.x = (parseFloat(t.dataset.x) || 0) + e.dx;
+                            t.dataset.y = (parseFloat(t.dataset.y) || 0) + e.dy;
+                            t.style.transform = `translate(${t.dataset.x}px,${t.dataset.y}px)`;
+                            myChart.resize();
+                        },
+                        end: saveLayout
+                    }
+                }).resizable({
+                    edges: { left: true, right: true, top: true, bottom: true },
+                    listeners: {
+                        move(e) {
+                            const t = e.target;
+                            t.style.width = e.rect.width + 'px';
+                            t.style.height = e.rect.height + 'px';
+                            t.dataset.x = (parseFloat(t.dataset.x) || 0) + e.deltaRect.left;
+                            t.dataset.y = (parseFloat(t.dataset.y) || 0) + e.deltaRect.top;
+                            t.style.transform = `translate(${t.dataset.x}px,${t.dataset.y}px)`;
+                            myChart.resize();
+                        },
+                        end: saveLayout
+                    }
+                });
+            } else {
+                // 移动端销毁拖拽功能
+                interact('.draggable-panel').unset();
+            }
+        };
 
         // 解析文本框数据
         const parseData = (text) => {
@@ -526,8 +593,17 @@
                 textStyle: { fontFamily: 'Microsoft YaHei', color: colors.text },
                 tooltip: { trigger: 'axis', backgroundColor: colors.bg, textStyle: { color: colors.text } },
                 legend: { data: ['日用量'], textStyle: { color: colors.text } },
-                xAxis: { type: 'category', data: labels, axisLabel: { color: colors.text, rotate: 30, fontSize: window.innerWidth <= 768 ? 10 : 12 } },
-                yAxis: { type: 'value', min: Math.floor(min / 100) * 100 - 500, max: Math.ceil(max / 100) * 100 + 500, axisLabel: { color: colors.text, fontSize: window.innerWidth <= 768 ? 10 : 12 } },
+                xAxis: { 
+                    type: 'category', 
+                    data: labels, 
+                    axisLabel: { color: colors.text, rotate: 30, fontSize: window.innerWidth <= 768 ? 10 : 12 } 
+                },
+                yAxis: { 
+                    type: 'value', 
+                    min: Math.floor(min / 100) * 100 - 500, 
+                    max: Math.ceil(max / 100) * 100 + 500, 
+                    axisLabel: { color: colors.text, fontSize: window.innerWidth <= 768 ? 10 : 12 } 
+                },
                 series: [{
                     name: '日用量', type: 'line', smooth: true, data: data, color: colors.line,
                     symbolSize: window.innerWidth <= 768 ? 4 : 6,
@@ -546,9 +622,9 @@
 
         // 屏幕旋转/尺寸变化适配
         window.addEventListener('resize', debounce(() => {
+            initPanelPosition();
+            initDrag();
             myChart.resize();
-            // 移动端屏幕变化时重置布局
-            if (window.innerWidth <= 768) resetLayout();
         }, 500));
 
         // 页面初始化
@@ -562,6 +638,9 @@
 
             // 赋值默认数据
             document.getElementById('jsonInput').value = decodeUsageData(params.data);
+            
+            // 初始化面板位置
+            initPanelPosition();
             
             // 初始化日期选择器
             flatpickr('#startDatePicker', {
@@ -581,7 +660,12 @@
             });
             
             // 按钮事件
-            document.getElementById('themeToggleBtn').onclick = () => { isDark = !isDark; localStorage.setItem('dark', isDark); initTheme(); renderChart(); };
+            document.getElementById('themeToggleBtn').onclick = () => { 
+                isDark = !isDark; 
+                localStorage.setItem('dark', isDark); 
+                initTheme(); 
+                renderChart(); 
+            };
             document.getElementById('resetLayoutBtn').onclick = resetLayout;
             document.getElementById('copyLinkBtn').onclick = copyLink;
             document.getElementById('clearDataBtn').onclick = clearData;
@@ -591,6 +675,7 @@
             updateTitle(startDate, productName);
             initTheme();
             loadLayout();
+            initDrag();
             renderChart();
         };
     </script>
