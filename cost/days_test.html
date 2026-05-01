@@ -6,7 +6,6 @@
     <title>日维度成本/用量分析</title>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/interactjs/dist/interact.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/tailwindcss@3.3.0/dist/tailwind.min.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/zh.js"></script>
@@ -69,7 +68,7 @@
         .custom-input {
             padding: 4px 8px;
             border-radius: 3px;
-            border: 1px thead #dcdfe6;
+            border: 1px solid #dcdfe6;
             font-size: 12px;
             width: 80px;
             transition: all 0.3s ease;
@@ -119,7 +118,7 @@
         body.dark .copy-btn { background: #10b981; }
         body.dark .clear-btn { background: #f97316; }
 
-        /* 拖拽面板（核心样式：文本框100%填充） */
+        /* 拖拽面板 */
         .draggable-panel {
             position: absolute;
             background: white;
@@ -199,15 +198,7 @@
                 <input type="text" id="startDatePicker" class="flatpickr-input custom-input">
             </div>
             
-            <div class="product-input-container {
-                position: absolute;
-                top: 50%;
-                left: 220px;
-                transform: translateY(-50%);
-                display: flex;
-                align-items: center;
-                gap: 8px;
-            }">
+            <div class="product-input-container">
                 <span class="input-label">产品：</span>
                 <input type="text" id="productNameInput" class="custom-input" placeholder="如：日志">
             </div>
@@ -224,7 +215,7 @@
 
         <!-- 图表面板 -->
         <div class="draggable-panel" id="chartPanel" style="left:10px; top:50px; width:calc(100vw - 20px); height:calc(70vh - 60px); z-index:12;">
-            <h2 class="panel-header">📈 日维度用量折线图</h2>
+            <h2 class="panel-header">📈 用量趋势图表</h2>
             <div class="panel-content">
                 <div id="mainChart"></div>
             </div>
@@ -245,7 +236,7 @@
         const myChart = echarts.init(document.getElementById('mainChart'));
         let productName = '';
         
-        // ============== 默认日期 = 当前日期 - 15天 ==============
+        // 默认日期 = 当前日期 - 15天
         const getDefaultStartDate = () => {
             const date = new Date();
             date.setDate(date.getDate() - 15);
@@ -255,7 +246,6 @@
             return `${y}-${m}-${d}`;
         };
         let startDate = getDefaultStartDate();
-        // ======================================================
 
         // 默认数据
         const DEFAULT_DATA = `20442
@@ -423,7 +413,7 @@
             return text.split('\n').map(line => line.trim()).filter(line => !isNaN(line) && line).map(Number);
         };
 
-        // ============== 核心：渲染图表（新增图表标题联动） ==============
+        // 渲染图表（已彻底删除图表内部标题）
         function renderChart() {
             const text = document.getElementById('jsonInput').value;
             const data = parseData(text);
@@ -439,12 +429,7 @@
             };
 
             const option = {
-                // 图表标题：实时联动产品名称
-                title: {
-                    text: productName ? `${productName}日维度用量趋势` : '日维度用量趋势',
-                    left: 'center',
-                    textStyle: { color: colors.text, fontSize: 16 }
-                },
+                grid: { top: 20, left: 60, right: 20, bottom: 60 },
                 textStyle: { fontFamily: 'Microsoft YaHei', color: colors.text },
                 tooltip: { trigger: 'axis', backgroundColor: colors.bg, textStyle: { color: colors.text } },
                 legend: { data: ['日用量'], textStyle: { color: colors.text } },
@@ -460,7 +445,6 @@
             };
             myChart.setOption(option);
         }
-        // ==============================================================
 
         // 数据输入自动刷新
         const refreshChart = debounce(renderChart);
@@ -483,17 +467,16 @@
                 onChange: (_, dateStr) => { 
                     startDate = dateStr; 
                     updateTitle(dateStr, productName); 
-                    renderChart(); // 日期切换同步更新图表标题
+                    renderChart();
                 }
             });
             
-            // ============== 产品输入：实时更新双标题 ==============
+            // 产品输入实时更新标题
             document.getElementById('productNameInput').addEventListener('input', function () {
                 productName = this.value;
-                updateTitle(startDate, productName); // 更新页面标题
-                renderChart(); // 同步更新图表标题
+                updateTitle(startDate, productName);
+                renderChart();
             });
-            // ======================================================
             
             // 按钮事件
             document.getElementById('themeToggleBtn').onclick = () => { isDark = !isDark; localStorage.setItem('dark', isDark); initTheme(); renderChart(); };
