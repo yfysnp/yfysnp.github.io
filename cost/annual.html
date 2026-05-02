@@ -80,6 +80,21 @@
         body.dark .reset-btn { background: #2563eb; }
         body.dark .reset-btn:hover { background: #1d4ed8; box-shadow: 0 2px 8px rgba(37,99,235,0.4); }
 
+        .copy-link-btn {
+            padding: 5px 12px;
+            background: #00b42a;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: background 0.2s, box-shadow 0.2s;
+        }
+        .copy-link-btn:hover { background: #009a25; box-shadow: 0 2px 8px rgba(0,180,42,0.3); }
+        body.dark .copy-link-btn { background: #10b981; }
+        body.dark .copy-link-btn:hover { background: #059669; }
+
         .theme-toggle-btn {
             padding: 5px 12px;
             background: #6b7280;
@@ -253,6 +268,7 @@
         <h1 class="main-title">25-26年月度成本对比分析</h1>
         <div class="btn-container">
             <button class="theme-toggle-btn" id="themeToggleBtn">切换暗黑模式</button>
+            <button class="copy-link-btn" id="copyLinkBtn">复制分享链接</button>
             <button class="reset-btn" id="resetLayoutBtn">重置布局</button>
         </div>
     </div>
@@ -404,15 +420,30 @@
     // 用 ResizeObserver 监听图表容器，自动跟随缩放
     new ResizeObserver(() => myChart.resize()).observe(document.getElementById('mainChart'));
 
+    function copyLink() {
+        const data = document.getElementById('jsonInput').value;
+        const url = `${location.origin}${location.pathname}?data=${encodeURIComponent(data)}`;
+        navigator.clipboard.writeText(url)
+            .then(() => {
+                const btn = document.getElementById('copyLinkBtn');
+                const prev = btn.textContent;
+                btn.textContent = '已复制！';
+                setTimeout(() => btn.textContent = prev, 2000);
+            })
+            .catch(() => alert('复制失败，请手动复制地址栏链接'));
+    }
+
     window.onload = function() {
         initTheme();
         document.getElementById('themeToggleBtn').addEventListener('click', toggleTheme);
         document.getElementById('resetLayoutBtn').addEventListener('click', resetLayout);
+        document.getElementById('copyLinkBtn').addEventListener('click', copyLink);
         loadLayout();
         initInteract();
 
         const inputEl = document.getElementById('jsonInput');
-        inputEl.value = JSON.stringify(defaultData, null, 2);
+        const urlData = new URLSearchParams(location.search).get('data');
+        inputEl.value = urlData ? decodeURIComponent(urlData) : JSON.stringify(defaultData, null, 2);
         refreshChart();
 
         inputEl.addEventListener('input', function() {
@@ -583,7 +614,42 @@
         const totalRatio = total25 > 0 ? (((total26 - total25) / total25) * 100).toFixed(2) : null;
         const totalCls = totalRatio !== null ? (parseFloat(totalRatio) >= 0 ? 'text-red-600 dark:text-red-400 font-bold' : 'text-green-600 dark:text-green-400 font-bold') : 'text-gray-400 dark:text-gray-500';
 
-        let html = `<table class="w-full border-collapse text-sm">
+        // 仅统计 26年已录入（非null）月份
+        let shown26 = 0, shown25 = 0, shownCount = 0;
+        data2026.forEach((v, i) => {
+            if (v !== null && v !== undefined) {
+                shown26 += v;
+                shown25 += (data2025[i] || 0);
+                shownCount++;
+            }
+        });
+        shown26 = parseFloat(shown26.toFixed(2));
+        shown25 = parseFloat(shown25.toFixed(2));
+        const shownRatio = shown25 > 0 ? (((shown26 - shown25) / shown25) * 100).toFixed(2) : null;
+        const shownRatioCls = shownRatio ? (parseFloat(shownRatio) >= 0 ? 'color:#f87171;' : 'color:#4ade80;') : '';
+        const shownRatioLightCls = shownRatio ? (parseFloat(shownRatio) >= 0 ? 'color:#dc2626;' : 'color:#16a34a;') : '';
+        const shownRatioDisplay = shownRatio ? (parseFloat(shownRatio) >= 0 ? '+' + shownRatio : shownRatio) + '%' : '-';
+
+        let html = `<div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:100px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;padding:6px 10px;text-align:center;">
+                <div style="font-size:10px;color:#0369a1;margin-bottom:2px;">26年已录入月数</div>
+                <div style="font-size:15px;font-weight:700;color:#0369a1;">${shownCount} 个月</div>
+            </div>
+            <div style="flex:1;min-width:100px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:6px 10px;text-align:center;">
+                <div style="font-size:10px;color:#15803d;margin-bottom:2px;">26年已录入合计</div>
+                <div style="font-size:15px;font-weight:700;color:#15803d;">${shown26 || "-"}</div>
+            </div>
+            <div style="flex:1;min-width:100px;background:#fefce8;border:1px solid #fde68a;border-radius:6px;padding:6px 10px;text-align:center;">
+                <div style="font-size:10px;color:#92400e;margin-bottom:2px;">对应25年合计</div>
+                <div style="font-size:15px;font-weight:700;color:#92400e;">${shown25 || "-"}</div>
+            </div>
+            <div style="flex:1;min-width:100px;background:#fdf4ff;border:1px solid #e9d5ff;border-radius:6px;padding:6px 10px;text-align:center;">
+                <div style="font-size:10px;color:#7e22ce;margin-bottom:2px;">累计同比增长</div>
+                <div style="font-size:15px;font-weight:700;${isDarkTheme ? shownRatioCls : shownRatioLightCls}">${shownRatioDisplay}</div>
+            </div>
+        </div>`;
+
+        html += `<table class="w-full border-collapse text-sm">
                 <thead><tr class="bg-gray-50 dark:bg-gray-800">
                     <th class="border border-gray-200 dark:border-gray-700 p-2 text-center text-gray-600 dark:text-gray-300 font-semibold" style="font-size:12px;">月份</th>
                     <th class="border border-gray-200 dark:border-gray-700 p-2 text-center text-gray-600 dark:text-gray-300 font-semibold" style="font-size:12px;">2025年</th>
