@@ -293,12 +293,10 @@
 <script>
     const myChart = echarts.init(document.getElementById('mainChart'));
     const monthList = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
-
     const defaultData = {
-        "2025": [2304670.49,2093682.25,2058184,2871679.92,4044585.04,3633284.42,2309572.78,2308662.43,3575716.07,4282045.31,3276700.22,2694166.28],
-        "2026": [2846193.48,2753144.68,2769000.94,2875210.51,null,null,null,null,null,null,null,null]
+        "2025": [2304670.489, 2093682.249, 2058184, 2879455.26, 4052381.69, 3641226.63, 2316297.6, 2308662.43, 3575716.07, 4282045.31, 3276700.22, 2694166.28],
+        "2026": [2846193.48, 2753144.681, 2769000.94, 2875210.51, null, null, null, null, null, null, null, null]
     };
-
     let timer = null;
     let isDarkTheme = localStorage.getItem('darkTheme') === 'true';
     let interactInited = false;
