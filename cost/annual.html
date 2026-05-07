@@ -295,8 +295,8 @@
     const monthList = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
 
     const defaultData = {
-        "2025": [1200,1300,1250,1400,1350,1500,1450,1600,1550,1700,1650,1800],
-        "2026": [1350,1420,1380,1500,1600,1580,null,null,null,null,null,null]
+        "2025": [2304670.49,2093682.25,2058184,2871679.92,4044585.04,3633284.42,2309572.78,2308662.43,3575716.07,4282045.31,3276700.22,2694166.28],
+        "2026": [2846193.48,2753144.68,2769000.94,2875210.51,null,null,null,null,null,null,null,null]
     };
 
     let timer = null;
@@ -629,6 +629,8 @@
         const shownRatioCls = shownRatio ? (parseFloat(shownRatio) >= 0 ? 'color:#f87171;' : 'color:#4ade80;') : '';
         const shownRatioLightCls = shownRatio ? (parseFloat(shownRatio) >= 0 ? 'color:#dc2626;' : 'color:#16a34a;') : '';
         const shownRatioDisplay = shownRatio ? (parseFloat(shownRatio) >= 0 ? '+' + shownRatio : shownRatio) + '%' : '-';
+        const pctOfTotal25 = total25 > 0 ? ((shown26 / total25) * 100).toFixed(2) : null;
+        const pctOfTotal25Display = pctOfTotal25 ? pctOfTotal25 + '%' : '-';
 
         let html = `<div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
             <div style="flex:1;min-width:100px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;padding:6px 10px;text-align:center;">
@@ -646,6 +648,10 @@
             <div style="flex:1;min-width:100px;background:#fdf4ff;border:1px solid #e9d5ff;border-radius:6px;padding:6px 10px;text-align:center;">
                 <div style="font-size:10px;color:#7e22ce;margin-bottom:2px;">累计同比增长</div>
                 <div style="font-size:15px;font-weight:700;${isDarkTheme ? shownRatioCls : shownRatioLightCls}">${shownRatioDisplay}</div>
+            </div>
+            <div style="flex:1;min-width:100px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:6px 10px;text-align:center;">
+                <div style="font-size:10px;color:#c2410c;margin-bottom:2px;">占25年总合计</div>
+                <div style="font-size:15px;font-weight:700;color:#c2410c;">${pctOfTotal25Display}</div>
             </div>
         </div>`;
 
