@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>月度同环比数据分析报告</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/interactjs/dist/interact.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: "Microsoft YaHei", sans-serif;
+            background: #f5f7fa;
+            padding: 10px;
+            overflow-x: hidden;
+            height: 100vh;
+            margin: 0;
+            transition: background 0.3s ease;
+        }
+
+        body.dark {
+            background: #1e1e2f;
+            color: #e5e7eb;
+        }
+
+        .title-container {
+            position: relative;
+            background: #f5f7fa;
+            padding: 5px 0;
+            margin-bottom: 10px;
+            height: 40px;
+            transition: background 0.3s ease;
+        }
+
+        body.dark .title-container {
+            background: #1e1e2f;
+        }
+
+        .main-title {
+            font-size: 20px;
+            font-weight: 600;
+            text-align: center;
+            color: #333;
+            margin: 0;
+            line-height: 40px;
+            transition: color 0.3s ease;
+        }
+
+        body.dark .main-title {
+            color: #e5e7eb;
+        }
+
+        .btn-container {
+            position: absolute;
+            top: 50%;
+            right: 10px;
+            transform: translateY(-50%);
+            display: flex;
+            gap: 8px;
+        }
+
+        .reset-btn {
+            padding: 5px 12px;
+            background: #1677ff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: background 0.2s, box-shadow 0.2s;
+        }
+
+        .reset-btn:hover {
+            background: #0f62d9;
+            box-shadow: 0 2px 8px rgba(22,119,255,0.3);
+        }
+
+        body.dark .reset-btn { background: #2563eb; }
+        body.dark .reset-btn:hover { background: #1d4ed8; box-shadow: 0 2px 8px rgba(37,99,235,0.4); }
+
+        .copy-link-btn {
+            padding: 5px 12px;
+            background: #00b42a;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: background 0.2s, box-shadow 0.2s;
+        }
+        .copy-link-btn:hover { background: #009a25; box-shadow: 0 2px 8px rgba(0,180,42,0.3); }
+        body.dark .copy-link-btn { background: #10b981; }
+        body.dark .copy-link-btn:hover { background: #059669; }
+
+        .theme-toggle-btn {
+            padding: 5px 12px;
+            background: #6b7280;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: background 0.2s, box-shadow 0.2s;
+        }
+
+        .theme-toggle-btn:hover { background: #4b5563; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+        body.dark .theme-toggle-btn { background: #374151; }
+        body.dark .theme-toggle-btn:hover { background: #1f2937; }
+
+        .draggable-panel {
+            position: absolute;
+            background: white;
+            padding: 0.8rem;
+            border-radius: 6px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.07);
+            min-width: 300px;
+            resize: both;
+            overflow: hidden;
+            user-select: none;
+            z-index: 10;
+            border: 1px solid #e8e8e8;
+            transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.2s;
+        }
+
+        .draggable-panel:hover {
+            box-shadow: 0 4px 18px rgba(0,0,0,0.11);
+        }
+
+        body.dark .draggable-panel {
+            background: #2d2d42;
+            border: 1px solid #3d3d56;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        }
+
+        body.dark .draggable-panel:hover {
+            box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+        }
+
+        .draggable-panel .panel-header {
+            cursor: move;
+            padding-bottom: 8px;
+            margin-bottom: 0.5rem;
+            user-select: none;
+            font-size: 14px;
+            color: #444;
+            font-weight: 600;
+            border-bottom: 1px solid #f0f0f0;
+            transition: color 0.3s ease, border-color 0.3s ease;
+        }
+
+        body.dark .draggable-panel .panel-header {
+            color: #d1d5db;
+            border-bottom-color: #3d3d56;
+        }
+
+        .kpi-card {
+            flex: 1;
+            min-width: 140px;
+            border-radius: 8px;
+            padding: 12px 14px;
+            text-align: center;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .kpi-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .kpi-label {
+            font-size: 11px;
+            margin-bottom: 4px;
+            font-weight: 500;
+        }
+
+        .kpi-value {
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .kpi-sub {
+            font-size: 10px;
+            margin-top: 2px;
+            opacity: 0.8;
+        }
+
+        .up { color: #dc2626; }
+        .down { color: #16a34a; }
+        body.dark .up { color: #f87171; }
+        body.dark .down { color: #4ade80; }
+
+        .detail-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+
+        .detail-table th {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            padding: 6px 8px;
+            text-align: center;
+            font-weight: 600;
+            color: #475569;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+
+        .detail-table td {
+            border: 1px solid #e2e8f0;
+            padding: 5px 8px;
+            text-align: right;
+        }
+
+        .detail-table td:first-child {
+            text-align: left;
+            font-weight: 500;
+            color: #334155;
+        }
+
+        .detail-table tbody tr:nth-child(even) td { background: #f9fafb; }
+        .detail-table tbody tr:hover td { background: #eef4ff !important; }
+
+        .detail-table .category-row td {
+            background: #e0f2fe !important;
+            font-weight: 700;
+            color: #0369a1;
+        }
+
+        body.dark .detail-table th { background: #373750; border-color: #3d3d56; color: #d1d5db; }
+        body.dark .detail-table td { border-color: #3d3d56; color: #e5e7eb; }
+        body.dark .detail-table td:first-child { color: #d1d5db; }
+        body.dark .detail-table tbody tr:nth-child(even) td { background: #323248; }
+        body.dark .detail-table tbody tr:hover td { background: #3a3a56 !important; }
+        body.dark .detail-table .category-row td { background: #1e3a5f !important; color: #7dd3fc; }
+
+        @media (max-width: 767px) {
+            body { padding: 8px; height: auto; overflow-y: auto; }
+
+            #panelContainer {
+                position: static !important;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+                min-height: unset;
+            }
+
+            .title-container {
+                height: auto;
+                padding: 8px 0 6px;
+                margin-bottom: 0;
+            }
+
+            .main-title { font-size: 16px; line-height: 1.4; margin-bottom: 8px; }
+
+            .btn-container {
+                position: static;
+                transform: none;
+                justify-content: center;
+                margin-top: 2px;
+            }
+
+            .draggable-panel {
+                position: static !important;
+                width: 100% !important;
+                height: auto !important;
+                transform: none !important;
+                min-width: unset;
+                resize: none;
+                border-radius: 8px;
+            }
+
+            .draggable-panel .panel-header { cursor: default; }
+
+            #panelKPI { order: 1; }
+            #panelChart { order: 2; }
+            #panelTable { order: 3; }
+
+            #barChart { height: 280px !important; }
+            .kpi-card { min-width: 100px; }
+            .kpi-value { font-size: 15px; }
+        }
+    </style>
+</head>
+<body>
+<div class="relative min-h-[calc(100vh-20px)]" id="panelContainer">
+    <div class="title-container">
+        <h1 class="main-title">2026年4月 月度同环比数据分析报告</h1>
+        <div class="btn-container">
+            <button class="theme-toggle-btn" id="themeToggleBtn">切换暗黑模式</button>
+            <button class="copy-link-btn" id="copyLinkBtn">复制分享链接</button>
+            <button class="reset-btn" id="resetLayoutBtn">重置布局</button>
+        </div>
+    </div>
+
+    <div class="draggable-panel" id="panelKPI" style="left: 10px; top: 50px; z-index: 12; width: calc(100vw - 30px); height: 130px;">
+        <h2 class="panel-header">📋 核心指标概览</h2>
+        <div id="kpiContainer" style="display:flex;gap:10px;flex-wrap:wrap;height:calc(100% - 40px);align-items:center;"></div>
+    </div>
+
+    <div class="draggable-panel" id="panelChart" style="left: 10px; top: 190px; z-index: 13; width: calc(100vw - 30px); height: calc(45vh - 80px);">
+        <h2 class="panel-header">📊 各类别费用对比（同比 & 环比）</h2>
+        <div id="barChart" class="w-full" style="height: calc(100% - 40px);"></div>
+    </div>
+
+    <div class="draggable-panel" id="panelTable" style="left: 10px; top: calc(45vh + 120px); z-index: 14; width: calc(100vw - 30px); height: calc(55vh - 140px);">
+        <h2 class="panel-header" style="display:flex;align-items:center;justify-content:space-between;">
+            <span>📝 明细数据同环比分析</span>
+            <button id="exportExcelBtn" style="padding:3px 10px;background:#1677ff;color:white;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:500;">导出Excel</button>
+        </h2>
+        <div id="detailTable" class="w-full overflow-y-auto" style="height: calc(100% - 40px);"></div>
+    </div>
+</div>
+
+<script>
+    const rawData = {
+        "2026-04": {
+            "应用服务器": {
+                "服务器总量/用量(核)": 21114, "服务器总量/用量(台)": 7195,
+                "服务器总量/费用": 1210890, "服务器总量/利用率": 35.50,
+                "物理机/用量(核)": 0, "物理机/费用": 0,
+                "KVM/用量(核)": 16, "KVM/费用": 917.6,
+                "jdos/用量(核)": 21098, "jdos/费用": 1209970
+            },
+            "中间件": {
+                "r2m/用量(GB)": 22840.8, "r2m/费用": 486053, "r2m/利用率": 56.99,
+                "ES/用量(核)": 356, "ES/费用": 20573.2, "ES/磁盘利用率": 45.04, "ES/CPU利用率": 50.14,
+                "kafka/用量(核)": 0, "kafka/费用": 0,
+                "sgm/用量(实例)": 3410.8, "sgm/费用": 95502.5,
+                "digger/用量(TB)": 23402.4, "digger/费用": 201260,
+                "easyjob/用量(实例)": 674, "easyjob/费用": 2581.42,
+                "concrete/用量(实例)": 35, "concrete/费用": 148.05,
+                "api-gateway/用量(万次)": 121023, "api-gateway/费用": 9681.86,
+                "fmq/用量(百万次)": 230781, "fmq/费用": 13846.8
+            },
+            "数据库": {
+                "tidb/用量(核)": 0, "tidb/磁盘(GB)": 0, "tidb/费用": 0,
+                "stardb/内存(GB)": 30682.4, "stardb/磁盘(TB)": 1150.57, "stardb/费用": 646748, "stardb/利用率": 66.40,
+                "clickhouse/用量(核)": 0, "clickhouse/磁盘(GB)": 0, "clickhouse/费用": 0
+            },
+            "存储": {
+                "cfs/用量(GB)": 112, "cfs/费用": 173.6,
+                "sftp/用量(GB)": 0.27, "sftp/费用": 0.4185,
+                "oss/用量(GB)": 151.383, "oss/费用": 46.9286
+            },
+            "金牌运维": { "用量(台)": 966.776, "费用": 109246 },
+            "安全": { "用量(台数)": 498.299, "费用": 71424.5, "用量(调用量)": 1563160, "费用(调用)": 7034.21 },
+            "总费用": 2875210.51
+        },
+        "2026-03": {
+            "应用服务器": {
+                "服务器总量/用量(核)": 18982.4, "服务器总量/用量(台)": 7012,
+                "服务器总量/费用": 1088640, "服务器总量/利用率": 32.02,
+                "物理机/用量(核)": 72.77, "物理机/费用": 4173.6,
+                "KVM/用量(核)": 16, "KVM/费用": 917.6,
+                "jdos/用量(核)": 18893.6, "jdos/费用": 1083550
+            },
+            "中间件": {
+                "r2m/用量(GB)": 20745.7, "r2m/费用": 441470, "r2m/利用率": 57.27,
+                "ES/用量(核)": 356, "ES/费用": 20573.2, "ES/磁盘利用率": 52.44, "ES/CPU利用率": 56.85,
+                "kafka/用量(核)": 0, "kafka/费用": 0,
+                "sgm/用量(实例)": 3062.58, "sgm/费用": 85752.1,
+                "digger/用量(TB)": 33498.7, "digger/费用": 288089,
+                "easyjob/用量(实例)": 510, "easyjob/费用": 1953.3,
+                "concrete/用量(实例)": 24, "concrete/费用": 101.52,
+                "api-gateway/用量(万次)": 107892, "api-gateway/费用": 8631.36,
+                "fmq/用量(百万次)": 216293, "fmq/费用": 12977.6
+            },
+            "数据库": {
+                "tidb/用量(核)": 0, "tidb/磁盘(GB)": 0, "tidb/费用": 0,
+                "stardb/内存(GB)": 30274.4, "stardb/磁盘(TB)": 1137.28, "stardb/费用": 638316, "stardb/利用率": 64.33,
+                "clickhouse/用量(核)": 0, "clickhouse/磁盘(GB)": 0, "clickhouse/费用": 0
+            },
+            "存储": {
+                "cfs/用量(GB)": 112, "cfs/费用": 173.6,
+                "sftp/用量(GB)": 0.27, "sftp/费用": 0.4185,
+                "oss/用量(GB)": 149.373, "oss/费用": 46.3057
+            },
+            "金牌运维": { "用量(台)": 939.829, "费用": 106201 },
+            "安全": { "用量(台数)": 447.597, "费用": 69626.2, "用量(调用量)": 1433530, "费用(调用)": 6450.91 },
+            "总费用": 2769000.94
+        },
+        "2025-04": {
+            "应用服务器": {
+                "服务器总量/用量(核)": 21241.5, "服务器总量/用量(台)": 8320,
+                "服务器总量/费用": 1217380, "服务器总量/利用率": 21.28,
+                "物理机/用量(核)": 616, "物理机/费用": 35327.6,
+                "KVM/用量(核)": 92, "KVM/费用": 5276.2,
+                "jdos/用量(核)": 20533.5, "jdos/费用": 1176770
+            },
+            "中间件": {
+                "r2m/用量(GB)": 18366.6, "r2m/费用": 390842, "r2m/利用率": 76.35,
+                "ES/用量(核)": 276, "ES/费用": 15950, "ES/磁盘利用率": 9.53, "ES/CPU利用率": 54.26,
+                "kafka/用量(核)": 0, "kafka/费用": 0,
+                "sgm/用量(实例)": 3787.83, "sgm/费用": 106059,
+                "digger/用量(TB)": 10288.9, "digger/费用": 88484.8,
+                "easyjob/用量(实例)": 848, "easyjob/费用": 3247.84,
+                "concrete/用量(实例)": 56, "concrete/费用": 236.88,
+                "api-gateway/用量(万次)": 60922.3, "api-gateway/费用": 4873.78,
+                "fmq/用量(百万次)": 11883.7, "fmq/费用": 1426.05
+            },
+            "数据库": {
+                "tidb/用量(核)": 0, "tidb/磁盘(GB)": 0, "tidb/费用": 0,
+                "stardb/内存(GB)": 32011.8, "stardb/磁盘(TB)": 1215.23, "stardb/费用": 677288, "stardb/利用率": 36.15,
+                "clickhouse/用量(核)": 0, "clickhouse/磁盘(GB)": 0, "clickhouse/费用": 0
+            },
+            "存储": {
+                "cfs/用量(GB)": 583.14, "cfs/费用": 903.867,
+                "sftp/用量(GB)": 0, "sftp/费用": 0,
+                "oss/用量(GB)": 137.58, "oss/费用": 42.6498
+            },
+            "金牌运维": { "用量(台)": 1499.43, "费用": 243312 },
+            "安全": { "用量(台数)": 803.704, "费用": 126123, "用量(调用量)": 730854, "费用(调用)": 3288.84 },
+            "总费用": 2879455.26
+        }
+    };
+
+    const barChart = echarts.init(document.getElementById('barChart'));
+    let isDarkTheme = localStorage.getItem('darkTheme') === 'true';
+    let interactInited = false;
+
+    function isMobile() { return window.innerWidth < 768; }
+
+    function calcRate(cur, base) {
+        if (!base || base === 0 || cur === null || cur === undefined) return null;
+        return ((cur - base) / Math.abs(base) * 100).toFixed(2);
+    }
+
+    function fmtRate(rate) {
+        if (rate === null || rate === undefined) return '-';
+        const v = parseFloat(rate);
+        const prefix = v >= 0 ? '+' : '';
+        return prefix + rate + '%';
+    }
+
+    function fmtRateHtml(rate) {
+        if (rate === null || rate === undefined) return '<span style="color:#9ca3af;">-</span>';
+        const v = parseFloat(rate);
+        const cls = v >= 0 ? 'up' : 'down';
+        const arrow = v >= 0 ? '↑' : '↓';
+        const prefix = v >= 0 ? '+' : '';
+        return `<span class="${cls}">${prefix}${rate}% ${arrow}</span>`;
+    }
+
+    function fmtRateWithDiff(rate, cur, base) {
+        const rateHtml = fmtRateHtml(rate);
+        if (rate === null || rate === undefined || cur === null || cur === undefined || base === null || base === undefined) return rateHtml;
+        const diff = cur - base;
+        const diffStr = (diff >= 0 ? '+' : '') + fmtNum(diff);
+        return `${rateHtml} <span style="font-size:10px;color:#6b7280;">(${diffStr})</span>`;
+    }
+
+    function fmtNum(num) {
+        if (num === null || num === undefined || num === 0) return '-';
+        if (Math.abs(num) >= 10000) return (num / 10000).toFixed(2) + '万';
+        return num.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+    }
+
+    function getCategoryFee(period, category) {
+        const d = rawData[period][category];
+        if (!d) return 0;
+        if (category === '安全') return (d['费用'] || 0) + (d['费用(调用)'] || 0);
+        if (category === '金牌运维') return d['费用'] || 0;
+        let total = 0;
+        for (const key in d) {
+            if (key.includes('费用')) total += d[key] || 0;
+        }
+        return total;
+    }
+
+    function initTheme() {
+        if (isDarkTheme) {
+            document.body.classList.add('dark');
+            document.getElementById('themeToggleBtn').textContent = '切换浅色模式';
+        } else {
+            document.body.classList.remove('dark');
+            document.getElementById('themeToggleBtn').textContent = '切换暗黑模式';
+        }
+        renderAll();
+    }
+
+    function toggleTheme() {
+        isDarkTheme = !isDarkTheme;
+        localStorage.setItem('darkTheme', isDarkTheme);
+        initTheme();
+    }
+
+    const STORAGE_KEY = "monthly_dashboard_layout_v1";
+
+    function saveLayout() {
+        const data = {};
+        document.querySelectorAll('.draggable-panel').forEach(el => {
+            data[el.id] = {
+                x: el.getAttribute('data-x') || 0,
+                y: el.getAttribute('data-y') || 0,
+                w: el.style.width,
+                h: el.style.height
+            };
+        });
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    }
+
+    function loadLayout() {
+        if (isMobile()) return;
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return;
+        const layouts = JSON.parse(raw);
+        for (const id in layouts) {
+            const el = document.getElementById(id);
+            if (!el) continue;
+            const l = layouts[id];
+            el.style.width = l.w;
+            el.style.height = l.h;
+            const x = parseFloat(l.x) || 0;
+            const y = parseFloat(l.y) || 0;
+            el.setAttribute('data-x', x);
+            el.setAttribute('data-y', y);
+            el.style.transform = `translate(${x}px, ${y}px)`;
+        }
+    }
+
+    function resetLayout() {
+        localStorage.removeItem(STORAGE_KEY);
+        const panels = {
+            panelKPI: { left: '10px', top: '50px', width: 'calc(100vw - 30px)', height: '130px', zIndex: 12 },
+            panelChart: { left: '10px', top: '190px', width: 'calc(100vw - 30px)', height: 'calc(45vh - 80px)', zIndex: 13 },
+            panelTable: { left: '10px', top: 'calc(45vh + 120px)', width: 'calc(100vw - 30px)', height: 'calc(55vh - 140px)', zIndex: 14 }
+        };
+        for (const id in panels) {
+            const el = document.getElementById(id);
+            if (el) {
+                const p = panels[id];
+                Object.assign(el.style, { left: p.left, top: p.top, width: p.width, height: p.height, zIndex: p.zIndex, transform: 'translate(0px, 0px)' });
+                el.removeAttribute('data-x');
+                el.removeAttribute('data-y');
+            }
+        }
+        barChart.resize();
+        alert('布局已重置为默认状态！');
+    }
+
+    function initInteract() {
+        if (isMobile() || interactInited) return;
+        interactInited = true;
+        interact('.draggable-panel')
+            .draggable({
+                inertia: true,
+                modifiers: [interact.modifiers.restrictRect({ restriction: 'body', endOnly: false })],
+                listeners: {
+                    move(event) {
+                        const t = event.target;
+                        const x = (parseFloat(t.getAttribute('data-x')) || 0) + event.dx;
+                        const y = (parseFloat(t.getAttribute('data-y')) || 0) + event.dy;
+                        t.style.transform = `translate(${x}px, ${y}px)`;
+                        t.setAttribute('data-x', x);
+                        t.setAttribute('data-y', y);
+                    },
+                    end: saveLayout
+                }
+            })
+            .resizable({
+                edges: { left: true, right: true, bottom: true, top: true },
+                listeners: {
+                    move(event) {
+                        const t = event.target;
+                        let x = parseFloat(t.getAttribute('data-x')) || 0;
+                        let y = parseFloat(t.getAttribute('data-y')) || 0;
+                        t.style.width = event.rect.width + 'px';
+                        t.style.height = event.rect.height + 'px';
+                        x += event.deltaRect.left;
+                        y += event.deltaRect.top;
+                        t.style.transform = `translate(${x}px, ${y}px)`;
+                        t.setAttribute('data-x', x);
+                        t.setAttribute('data-y', y);
+                    },
+                    end: saveLayout
+                }
+            });
+    }
+
+    new ResizeObserver(() => barChart.resize()).observe(document.getElementById('barChart'));
+
+    function copyLink() {
+        navigator.clipboard.writeText(location.href)
+            .then(() => {
+                const btn = document.getElementById('copyLinkBtn');
+                const prev = btn.textContent;
+                btn.textContent = '已复制！';
+                setTimeout(() => btn.textContent = prev, 2000);
+            })
+            .catch(() => alert('复制失败'));
+    }
+
+    function renderKPI() {
+        const total04 = rawData["2026-04"]["总费用"];
+        const total03 = rawData["2026-03"]["总费用"];
+        const total25 = rawData["2025-04"]["总费用"];
+        const yoy = calcRate(total04, total25);
+        const mom = calcRate(total04, total03);
+
+        const serverFee04 = getCategoryFee("2026-04", "应用服务器");
+        const serverFee03 = getCategoryFee("2026-03", "应用服务器");
+        const serverMom = calcRate(serverFee04, serverFee03);
+
+        const mwFee04 = getCategoryFee("2026-04", "中间件");
+        const mwFee25 = getCategoryFee("2025-04", "中间件");
+        const mwYoy = calcRate(mwFee04, mwFee25);
+
+        const utilRate04 = rawData["2026-04"]["应用服务器"]["服务器总量/利用率"];
+        const utilRate25 = rawData["2025-04"]["应用服务器"]["服务器总量/利用率"];
+
+        const yoyDiff = total04 - total25;
+        const momDiff = total04 - total03;
+        const fmtDiff = d => (d >= 0 ? '+' : '') + fmtNum(d) + '元';
+
+        const cards = [
+            { label: '4月总费用', value: fmtNum(total04), sub: '元', bg: '#eff6ff', border: '#bfdbfe', color: '#1d4ed8' },
+            { label: '总费用同比(vs 25年4月)', value: fmtRate(yoy), sub: fmtDiff(yoyDiff), bg: parseFloat(yoy) >= 0 ? '#fef2f2' : '#f0fdf4', border: parseFloat(yoy) >= 0 ? '#fecaca' : '#bbf7d0', color: parseFloat(yoy) >= 0 ? '#dc2626' : '#16a34a' },
+            { label: '总费用环比(vs 26年3月)', value: fmtRate(mom), sub: fmtDiff(momDiff), bg: parseFloat(mom) >= 0 ? '#fef2f2' : '#f0fdf4', border: parseFloat(mom) >= 0 ? '#fecaca' : '#bbf7d0', color: parseFloat(mom) >= 0 ? '#dc2626' : '#16a34a' },
+            { label: '应用服务器环比', value: fmtRate(serverMom), sub: '', bg: '#fefce8', border: '#fde68a', color: '#92400e' },
+            { label: '中间件同比', value: fmtRate(mwYoy), sub: '', bg: '#fdf4ff', border: '#e9d5ff', color: '#7e22ce' },
+            { label: '服务器利用率', value: utilRate04 + '%', sub: '同比+' + (utilRate04 - utilRate25).toFixed(1) + 'pp', bg: '#f0fdf4', border: '#bbf7d0', color: '#15803d' }
+        ];
+
+        const container = document.getElementById('kpiContainer');
+        container.innerHTML = cards.map(c => `
+            <div class="kpi-card" style="background:${c.bg};border:1px solid ${c.border};">
+                <div class="kpi-label" style="color:${c.color};">${c.label}</div>
+                <div class="kpi-value" style="color:${c.color};">${c.value}</div>
+                ${c.sub ? `<div class="kpi-sub" style="color:${c.color};">${c.sub}</div>` : ''}
+            </div>
+        `).join('');
+    }
+
+    function renderBarChart() {
+        const categories = ['应用服务器', '中间件', '数据库', '存储', '金牌运维', '安全'];
+        const data04 = categories.map(c => getCategoryFee("2026-04", c));
+        const data03 = categories.map(c => getCategoryFee("2026-03", c));
+        const data25 = categories.map(c => getCategoryFee("2025-04", c));
+        const yoyRates = data04.map((v, i) => calcRate(v, data25[i]));
+        const momRates = data04.map((v, i) => calcRate(v, data03[i]));
+
+        const tc = isDarkTheme ? {
+            text: '#e5e7eb', axisLine: '#4a4a6a', splitLine: '#373750',
+            tooltipBg: 'rgba(30,30,47,0.97)', tooltipBorder: '#4a4a6a'
+        } : {
+            text: '#444', axisLine: '#e2e8f0', splitLine: '#f1f5f9',
+            tooltipBg: 'rgba(255,255,255,0.98)', tooltipBorder: '#e2e8f0'
+        };
+
+        const option = {
+            textStyle: { fontFamily: "Microsoft YaHei", color: tc.text },
+            tooltip: {
+                trigger: 'axis',
+                backgroundColor: tc.tooltipBg,
+                borderColor: tc.tooltipBorder,
+                borderWidth: 1,
+                padding: 12,
+                textStyle: { fontSize: 12, color: tc.text },
+                formatter: params => {
+                    if (!params.length) return '';
+                    const i = params[0].dataIndex;
+                    const visibleNames = new Set(params.map(p => p.seriesName));
+                    const yoyDiff = data04[i] - data25[i];
+                    const momDiff = data04[i] - data03[i];
+                    const fmtDiffTip = d => (d >= 0 ? '+' : '') + fmtNum(d);
+                    let lines = [`<b>${categories[i]}</b>`];
+                    if (visibleNames.has('2025-04')) lines.push(`<span style="color:#1677ff;">●</span> 2025-04：${fmtNum(data25[i])} 元`);
+                    if (visibleNames.has('2026-03')) lines.push(`<span style="color:#facc15;">●</span> 2026-03：${fmtNum(data03[i])} 元`);
+                    if (visibleNames.has('2026-04')) lines.push(`<span style="color:#36cbcb;">●</span> 2026-04：${fmtNum(data04[i])} 元`);
+                    if (visibleNames.has('同比(%)')) lines.push(`<span style="color:#ff7d00;">●</span> 同比：${fmtRate(yoyRates[i])}（${fmtDiffTip(yoyDiff)}元）`);
+                    if (visibleNames.has('环比(%)')) lines.push(`<span style="color:#a855f7;">●</span> 环比：${fmtRate(momRates[i])}（${fmtDiffTip(momDiff)}元）`);
+                    return lines.join('<br/>');
+                }
+            },
+            legend: {
+                data: ['2025-04', '2026-03', '2026-04', '同比(%)', '环比(%)'],
+                top: 8, left: 'center',
+                itemWidth: 14, itemHeight: 7, itemGap: 14,
+                textStyle: { color: tc.text, fontSize: 11 }
+            },
+            grid: { top: 55, left: 60, right: 60, bottom: 35, containLabel: true },
+            xAxis: {
+                type: 'category', data: categories,
+                axisLabel: { fontSize: 11, color: tc.text, interval: 0 },
+                axisLine: { lineStyle: { color: tc.axisLine } }
+            },
+            yAxis: [
+                {
+                    type: 'value', name: '费用（元）', position: 'left',
+                    nameTextStyle: { fontSize: 11, color: tc.text },
+                    axisLabel: { fontSize: 11, color: tc.text, formatter: v => v >= 10000 ? (v/10000).toFixed(0) + '万' : v },
+                    splitLine: { lineStyle: { color: tc.splitLine } },
+                    axisLine: { lineStyle: { color: tc.axisLine } }
+                },
+                {
+                    type: 'value', name: '增长率(%)', position: 'right',
+                    nameTextStyle: { fontSize: 11, color: tc.text },
+                    axisLabel: { fontSize: 11, color: tc.text, formatter: '{value}%' },
+                    splitLine: { show: false },
+                    axisLine: { lineStyle: { color: tc.axisLine } }
+                }
+            ],
+            series: [
+                {
+                    name: '2025-04', type: 'bar', data: data25, color: '#1677ff',
+                    barWidth: '18%', itemStyle: { borderRadius: [3, 3, 0, 0] }
+                },
+                {
+                    name: '2026-03', type: 'bar', data: data03, color: '#facc15',
+                    barWidth: '18%', itemStyle: { borderRadius: [3, 3, 0, 0] }
+                },
+                {
+                    name: '2026-04', type: 'bar', data: data04, color: '#36cbcb',
+                    barWidth: '18%', itemStyle: { borderRadius: [3, 3, 0, 0] }
+                },
+                {
+                    name: '同比(%)', type: 'line', yAxisIndex: 1,
+                    data: yoyRates.map(v => v !== null ? parseFloat(v) : null),
+                    color: '#ff7d00', lineStyle: { width: 2, type: 'dashed' },
+                    symbol: 'circle', symbolSize: 6
+                },
+                {
+                    name: '环比(%)', type: 'line', yAxisIndex: 1,
+                    data: momRates.map(v => v !== null ? parseFloat(v) : null),
+                    color: '#a855f7', lineStyle: { width: 2, type: 'dashed' },
+                    symbol: 'diamond', symbolSize: 6
+                }
+            ],
+            animationDuration: 800,
+            animationEasing: 'cubicOut'
+        };
+        barChart.setOption(option, true);
+    }
+
+    function renderDetailTable() {
+        const sections = [
+            {
+                name: '应用服务器', items: [
+                    { label: '服务器总量/费用', key: '服务器总量/费用', unit: '元' },
+                    { label: '服务器总量/用量', key: '服务器总量/用量(核)', unit: '核' },
+                    { label: '服务器总量/台数', key: '服务器总量/用量(台)', unit: '台' },
+                    { label: '服务器利用率', key: '服务器总量/利用率', unit: '%' },
+                    { label: '物理机/费用', key: '物理机/费用', unit: '元' },
+                    { label: 'KVM/费用', key: 'KVM/费用', unit: '元' },
+                    { label: 'jdos/费用', key: 'jdos/费用', unit: '元' }
+                ]
+            },
+            {
+                name: '中间件', items: [
+                    { label: 'r2m/费用', key: 'r2m/费用', unit: '元' },
+                    { label: 'r2m/用量', key: 'r2m/用量(GB)', unit: 'GB' },
+                    { label: 'r2m/利用率', key: 'r2m/利用率', unit: '%' },
+                    { label: 'ES/费用', key: 'ES/费用', unit: '元' },
+                    { label: 'sgm/费用', key: 'sgm/费用', unit: '元' },
+                    { label: 'digger/费用', key: 'digger/费用', unit: '元' },
+                    { label: 'easyjob/费用', key: 'easyjob/费用', unit: '元' },
+                    { label: 'concrete/费用', key: 'concrete/费用', unit: '元' },
+                    { label: 'api-gateway/费用', key: 'api-gateway/费用', unit: '元' },
+                    { label: 'fmq/费用', key: 'fmq/费用', unit: '元' }
+                ]
+            },
+            {
+                name: '数据库', items: [
+                    { label: 'stardb/费用', key: 'stardb/费用', unit: '元' },
+                    { label: 'stardb/内存', key: 'stardb/内存(GB)', unit: 'GB' },
+                    { label: 'stardb/磁盘', key: 'stardb/磁盘(TB)', unit: 'TB' },
+                    { label: 'stardb/利用率', key: 'stardb/利用率', unit: '%' }
+                ]
+            },
+            {
+                name: '存储', items: [
+                    { label: 'cfs/费用', key: 'cfs/费用', unit: '元' },
+                    { label: 'sftp/费用', key: 'sftp/费用', unit: '元' },
+                    { label: 'oss/费用', key: 'oss/费用', unit: '元' }
+                ]
+            },
+            {
+                name: '金牌运维', items: [
+                    { label: '费用', key: '费用', unit: '元' },
+                    { label: '用量', key: '用量(台)', unit: '台' }
+                ]
+            },
+            {
+                name: '安全', items: [
+                    { label: '安全/费用(台数)', key: '费用', unit: '元' },
+                    { label: '安全/费用(调用)', key: '费用(调用)', unit: '元' }
+                ]
+            }
+        ];
+
+        let html = `<table class="detail-table">
+            <thead><tr>
+                <th style="min-width:160px;">指标</th>
+                <th>2026-03</th>
+                <th>2025-04</th>
+                <th>2026-04</th>
+                <th>同比变化 ▼</th>
+                <th>环比变化</th>
+            </tr></thead><tbody>`;
+
+        // 总费用行
+        const t04 = rawData["2026-04"]["总费用"];
+        const t03 = rawData["2026-03"]["总费用"];
+        const t25 = rawData["2025-04"]["总费用"];
+        html += `<tr class="category-row">
+            <td>总费用合计</td>
+            <td>${fmtNum(t03)}</td>
+            <td>${fmtNum(t25)}</td>
+            <td>${fmtNum(t04)}</td>
+            <td>${fmtRateWithDiff(calcRate(t04, t25), t04, t25)}</td>
+            <td>${fmtRateWithDiff(calcRate(t04, t03), t04, t03)}</td>
+        </tr>`;
+
+        // 各类别分组，组内按同比倒序
+        sections.forEach(section => {
+            const catFee04 = getCategoryFee("2026-04", section.name);
+            const catFee03 = getCategoryFee("2026-03", section.name);
+            const catFee25 = getCategoryFee("2025-04", section.name);
+            html += `<tr class="category-row"><td>${section.name}</td>
+                <td style="text-align:right;">${fmtNum(catFee03)}</td>
+                <td style="text-align:right;">${fmtNum(catFee25)}</td>
+                <td style="text-align:right;">${fmtNum(catFee04)}</td>
+                <td style="text-align:right;">${fmtRateWithDiff(calcRate(catFee04, catFee25), catFee04, catFee25)}</td>
+                <td style="text-align:right;">${fmtRateWithDiff(calcRate(catFee04, catFee03), catFee04, catFee03)}</td>
+            </tr>`;
+
+            // 组内子指标按同比倒序
+            const itemRows = section.items.map(item => {
+                const v04 = rawData["2026-04"][section.name][item.key];
+                const v03 = rawData["2026-03"][section.name][item.key];
+                const v25 = rawData["2025-04"][section.name][item.key];
+                const isFee = item.label.includes('费用') || item.key.includes('费用');
+                return { label: item.label, v04, v03, v25, yoy: calcRate(v04, v25), mom: calcRate(v04, v03), isFee };
+            });
+            itemRows.sort((a, b) => {
+                const aVal = a.yoy !== null ? parseFloat(a.yoy) : -Infinity;
+                const bVal = b.yoy !== null ? parseFloat(b.yoy) : -Infinity;
+                return bVal - aVal;
+            });
+
+            itemRows.forEach(row => {
+                const fmtVal = v => (v !== null && v !== undefined && v !== 0) ? v.toLocaleString('zh-CN', {maximumFractionDigits:2}) : '-';
+                const yoyHtml = row.isFee ? fmtRateWithDiff(row.yoy, row.v04, row.v25) : fmtRateHtml(row.yoy);
+                const momHtml = row.isFee ? fmtRateWithDiff(row.mom, row.v04, row.v03) : fmtRateHtml(row.mom);
+                html += `<tr>
+                    <td style="padding-left:20px;">${row.label}</td>
+                    <td>${fmtVal(row.v03)}</td>
+                    <td>${fmtVal(row.v25)}</td>
+                    <td>${fmtVal(row.v04)}</td>
+                    <td>${yoyHtml}</td>
+                    <td>${momHtml}</td>
+                </tr>`;
+            });
+        });
+
+        html += '</tbody></table>';
+        document.getElementById('detailTable').innerHTML = html;
+
+        // 双击单元格复制内容
+        document.getElementById('detailTable').addEventListener('dblclick', function(e) {
+            const td = e.target.closest('td, th');
+            if (!td) return;
+            const text = td.textContent.trim();
+            navigator.clipboard.writeText(text).then(() => {
+                const orig = td.style.background;
+                td.style.background = isDarkTheme ? '#374151' : '#dbeafe';
+                td.style.transition = 'background 0.2s';
+                setTimeout(() => { td.style.background = orig; }, 400);
+            });
+        });
+    }
+
+    function renderAll() {
+        renderKPI();
+        renderBarChart();
+        renderDetailTable();
+    }
+
+    window.onload = function() {
+        initTheme();
+        document.getElementById('themeToggleBtn').addEventListener('click', toggleTheme);
+        document.getElementById('resetLayoutBtn').addEventListener('click', resetLayout);
+        document.getElementById('copyLinkBtn').addEventListener('click', copyLink);
+        document.getElementById('exportExcelBtn').addEventListener('click', exportExcel);
+        loadLayout();
+        initInteract();
+    };
+
+    function exportExcel() {
+        const table = document.querySelector('#detailTable table');
+        if (!table) return;
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.table_to_sheet(table, { raw: true });
+        XLSX.utils.book_append_sheet(wb, ws, '月度同环比分析');
+        XLSX.writeFile(wb, '月度同环比数据分析_2026年4月.xlsx');
+    }
+
+    window.addEventListener('resize', () => {
+        if (!isMobile() && !localStorage.getItem(STORAGE_KEY)) {
+            document.getElementById('panelKPI').style.width = 'calc(100vw - 30px)';
+            document.getElementById('panelChart').style.width = 'calc(100vw - 30px)';
+            document.getElementById('panelTable').style.width = 'calc(100vw - 30px)';
+        }
+    });
+</script>
+</body>
+</html>
