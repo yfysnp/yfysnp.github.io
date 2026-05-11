@@ -516,10 +516,13 @@
                 trigger: 'axis',
                 formatter: params => {
                     const i = params[0].dataIndex;
+                    const curMonth = new Date().getMonth();
+                    const isForecast = data2026[i] !== null && data2026[i] !== undefined && i >= curMonth;
+                    const forecastTag = isForecast ? ' <span style="background:#fef3c7;color:#d97706;padding:1px 4px;border-radius:3px;font-size:10px;">预测</span>' : '';
                     return `<b>${params[0].name}</b><br/>
                             <span style="color:#1677ff;">●</span> 2025年：${data2025[i] ?? "-"} 元<br/>
                             <span style="color:#36cbcb;">●</span> 2026年：${data2026[i] ?? "-"} 元<br/>
-                            <span style="color:#ff7d00;">●</span> 增长：${ratioData[i] !== null ? ratioData[i] + "%" : "-"}`;
+                            <span style="color:#ff7d00;">●</span> 增长：${ratioData[i] !== null ? ratioData[i] + "%" + forecastTag : "-"}`;
                 },
                 backgroundColor: tc.tooltipBg,
                 borderColor: tc.tooltipBorder,
@@ -661,12 +664,15 @@
                     <th class="border border-gray-200 dark:border-gray-700 p-2 text-center text-gray-600 dark:text-gray-300 font-semibold" style="font-size:12px;">同比增长</th>
                 </tr></thead><tbody>`;
 
+        const currentMonth = new Date().getMonth(); // 0-indexed: 0=Jan, 4=May
         monthList.forEach((m, i) => {
             const c25 = data2025[i], c26 = data2026[i];
             let r = "-", cls = "text-gray-400 dark:text-gray-500";
+            const isForecast = c26 !== null && c26 !== undefined && i >= currentMonth;
             if (c25 && c25 !== 0 && c26 !== null) {
                 const v = ((c26 - c25) / c25 * 100).toFixed(2);
-                r = v + "%";
+                const forecastTag = isForecast ? ' <span style="background:#fef3c7;color:#d97706;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:600;margin-left:3px;">预测</span>' : '';
+                r = v + "%" + forecastTag;
                 cls = parseFloat(v) >= 0 ? "text-red-600 dark:text-red-400 font-bold" : "text-green-600 dark:text-green-400 font-bold";
             }
             html += `<tr class="hover:bg-blue-50 dark:hover:bg-gray-700/50 transition-colors">
