@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>26年4月与25年5月费用TOP20应用环比增减分析</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 28px;
+            color: #1a1a2e;
+            margin-bottom: 40px;
+            padding-bottom: 16px;
+            border-bottom: 3px solid #4a90d9;
+        }
+
+        .section {
+            background: #fff;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        }
+
+        .section h2 {
+            font-size: 20px;
+            color: #2c3e50;
+            margin-bottom: 20px;
+            padding-left: 12px;
+            border-left: 4px solid #4a90d9;
+        }
+
+        .table-wrapper {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        thead th {
+            background: #4a90d9;
+            color: #fff;
+            padding: 12px 10px;
+            text-align: center;
+            white-space: nowrap;
+            font-weight: 600;
+        }
+
+        thead th.sortable {
+            cursor: pointer;
+            user-select: none;
+            position: relative;
+            padding-right: 22px;
+        }
+
+        thead th.sortable:hover {
+            background: #3a7bc8;
+        }
+
+        thead th.sortable::after {
+            content: "\21C5";
+            position: absolute;
+            right: 6px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 12px;
+            opacity: 0.6;
+        }
+
+        thead th.sortable.asc::after {
+            content: "\2191";
+            opacity: 1;
+        }
+
+        thead th.sortable.desc::after {
+            content: "\2193";
+            opacity: 1;
+        }
+
+        tbody td {
+            padding: 10px;
+            text-align: center;
+            border-bottom: 1px solid #eef2f7;
+        }
+
+        tbody tr:hover {
+            background: #f0f7ff;
+        }
+
+        tbody tr:nth-child(even) {
+            background: #fafbfc;
+        }
+
+        tbody tr:nth-child(even):hover {
+            background: #f0f7ff;
+        }
+
+        .app-name {
+            text-align: left;
+            font-weight: 500;
+            color: #2c3e50;
+            max-width: 200px;
+            word-break: break-all;
+        }
+
+        .dept {
+            text-align: left;
+            font-size: 12px;
+            color: #666;
+            max-width: 280px;
+        }
+
+        .trend-up {
+            color: #e74c3c;
+            font-weight: 600;
+        }
+
+        .trend-down {
+            color: #27ae60;
+            font-weight: 600;
+        }
+
+        .trend-new {
+            color: #f39c12;
+            font-weight: 600;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .badge-up {
+            background: #fde8e8;
+            color: #e74c3c;
+        }
+
+        .badge-down {
+            background: #e8f8f0;
+            color: #27ae60;
+        }
+
+        .badge-new {
+            background: #fef3e2;
+            color: #f39c12;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px;
+            padding: 24px;
+            color: #fff;
+            text-align: center;
+        }
+
+        .stat-card:nth-child(1) {
+            background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+        }
+
+        .stat-card:nth-child(2) {
+            background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%);
+        }
+
+        .stat-card:nth-child(3) {
+            background: linear-gradient(135deg, #95a5a6 0%, #7f8c8d 100%);
+        }
+
+        .stat-card:nth-child(4) {
+            background: linear-gradient(135deg, #f39c12 0%, #d68910 100%);
+        }
+
+        .stat-card .stat-number {
+            font-size: 36px;
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+
+        .stat-card .stat-label {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .stat-card .stat-percent {
+            font-size: 14px;
+            opacity: 0.8;
+            margin-top: 4px;
+        }
+
+        .conclusions {
+            list-style: none;
+        }
+
+        .conclusions li {
+            padding: 14px 16px;
+            margin-bottom: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #4a90d9;
+            line-height: 1.6;
+            font-size: 15px;
+        }
+
+        .conclusions li strong {
+            color: #2c3e50;
+        }
+
+        .money {
+            font-family: "Menlo", "Courier New", monospace;
+            white-space: nowrap;
+        }
+
+        .rate-high {
+            color: #e74c3c;
+            font-weight: 700;
+        }
+
+        .rate-low {
+            color: #27ae60;
+            font-weight: 700;
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+
+        .section-header h2 {
+            margin-bottom: 0;
+        }
+
+        .export-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            background: #27ae60;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .export-btn:hover {
+            background: #1e8449;
+        }
+
+        .export-btn svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 20px 10px;
+            }
+
+            h1 {
+                font-size: 20px;
+            }
+
+            .section {
+                padding: 16px;
+            }
+
+            table {
+                font-size: 12px;
+            }
+
+            thead th, tbody td {
+                padding: 8px 6px;
+            }
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>26年4月与25年5月费用TOP20应用环比增减分析</h1>
+
+        <div class="section">
+            <div class="section-header">
+                <h2>一、TOP20应用费用环比对比表</h2>
+                <button class="export-btn" onclick="exportExcel()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    导出Excel
+                </button>
+            </div>
+            <div class="table-wrapper">
+                <table id="main-table">
+                    <thead>
+                        <tr>
+                            <th>排名</th>
+                            <th>应用名</th>
+                            <th>部门</th>
+                            <th>负责人</th>
+                            <th>25年5月费用(元)</th>
+                            <th class="sortable" data-col="5" data-type="money">26年4月费用(元)</th>
+                            <th class="sortable" data-col="6" data-type="money">费用差异(元)</th>
+                            <th class="sortable" data-col="7" data-type="rate">增长率(%)</th>
+                            <th class="sortable" data-col="8" data-type="trend">趋势</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>1</td>
+                            <td class="app-name">pay-settle-front</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>xiechuanwei1</td>
+                            <td class="money">364,898.61</td>
+                            <td class="money">259,120.03</td>
+                            <td class="money trend-down">-105,778.59</td>
+                            <td class="rate-low">-29.0%</td>
+                            <td><span class="badge badge-down">下降</span></td>
+                        </tr>
+                        <tr>
+                            <td>2</td>
+                            <td class="app-name">未关联应用(stardb)</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>-</td>
+                            <td class="money">162,352.48</td>
+                            <td class="money">175,278.95</td>
+                            <td class="money trend-up">+12,926.47</td>
+                            <td class="rate-high">+8.0%</td>
+                            <td><span class="badge badge-up">增长</span></td>
+                        </tr>
+                        <tr>
+                            <td>3</td>
+                            <td class="app-name">newtrade.pay.jd.com</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>tanyangyang</td>
+                            <td class="money">192,637.70</td>
+                            <td class="money">170,536.64</td>
+                            <td class="money trend-down">-22,101.06</td>
+                            <td class="rate-low">-11.5%</td>
+                            <td><span class="badge badge-down">下降</span></td>
+                        </tr>
+                        <tr>
+                            <td>4</td>
+                            <td class="app-name">hachi</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>wangzhaohua8</td>
+                            <td class="money">530,861.52</td>
+                            <td class="money">119,381.75</td>
+                            <td class="money trend-down">-411,479.78</td>
+                            <td class="rate-low">-77.5%</td>
+                            <td><span class="badge badge-down">下降</span></td>
+                        </tr>
+                        <tr>
+                            <td>5</td>
+                            <td class="app-name">preheat-A(Jimdb)</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>caiyongle</td>
+                            <td class="money">101,470.95</td>
+                            <td class="money">111,956.28</td>
+                            <td class="money trend-up">+10,485.33</td>
+                            <td class="rate-high">+10.3%</td>
+                            <td><span class="badge badge-up">增长</span></td>
+                        </tr>
+                        <tr>
+                            <td>6</td>
+                            <td class="app-name">preheat-B(Jimdb)</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>caiyongle</td>
+                            <td class="money">101,470.95</td>
+                            <td class="money">111,956.28</td>
+                            <td class="money trend-up">+10,485.33</td>
+                            <td class="rate-high">+10.3%</td>
+                            <td><span class="badge badge-up">增长</span></td>
+                        </tr>
+                        <tr>
+                            <td>7</td>
+                            <td class="app-name">hachi_jimdb(Jimdb)</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>wangzhaohua8</td>
+                            <td class="money">202,941.91</td>
+                            <td class="money">101,470.95</td>
+                            <td class="money trend-down">-101,470.95</td>
+                            <td class="rate-low">-50.0%</td>
+                            <td><span class="badge badge-down">下降</span></td>
+                        </tr>
+                        <tr>
+                            <td>8</td>
+                            <td class="app-name">jimdb.payment_worker</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>qinyangyang5</td>
+                            <td class="money">124,388.60</td>
+                            <td class="money">97,007.19</td>
+                            <td class="money trend-down">-27,381.41</td>
+                            <td class="rate-low">-22.0%</td>
+                            <td><span class="badge badge-down">下降</span></td>
+                        </tr>
+                        <tr>
+                            <td>9</td>
+                            <td class="app-name">orderbank.jr</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>wenlixing</td>
+                            <td class="money">94,050.98</td>
+                            <td class="money">95,139.56</td>
+                            <td class="money trend-up">+1,088.57</td>
+                            <td class="rate-high">+1.2%</td>
+                            <td><span class="badge badge-up">增长</span></td>
+                        </tr>
+                        <tr>
+                            <td>10</td>
+                            <td class="app-name">pay-product-front</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>zhangxin410</td>
+                            <td class="money">15,351.30</td>
+                            <td class="money">86,630.08</td>
+                            <td class="money trend-up">+71,278.78</td>
+                            <td class="rate-high">+464.3%</td>
+                            <td><span class="badge badge-up">增长</span></td>
+                        </tr>
+                        <tr>
+                            <td>11</td>
+                            <td class="app-name">未关联应用(安全)</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>-</td>
+                            <td class="money">104,920.73</td>
+                            <td class="money">78,458.73</td>
+                            <td class="money trend-down">-26,462.01</td>
+                            <td class="rate-low">-25.2%</td>
+                            <td><span class="badge badge-down">下降</span></td>
+                        </tr>
+                        <tr>
+                            <td>12</td>
+                            <td class="app-name">jdpay-sdk</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>liujingbo6</td>
+                            <td class="money">140,065.10</td>
+                            <td class="money">73,785.38</td>
+                            <td class="money trend-down">-66,279.72</td>
+                            <td class="rate-low">-47.3%</td>
+                            <td><span class="badge badge-down">下降</span></td>
+                        </tr>
+                        <tr>
+                            <td>13</td>
+                            <td class="app-name">dual-command-trade</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>zhangmeining</td>
+                            <td class="money">7,130.64</td>
+                            <td class="money">44,200.59</td>
+                            <td class="money trend-up">+37,069.95</td>
+                            <td class="rate-high">+519.9%</td>
+                            <td><span class="badge badge-up">增长</span></td>
+                        </tr>
+                        <tr>
+                            <td>14</td>
+                            <td class="app-name">settle-front</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>xiechuanwei1</td>
+                            <td class="money">74,875.79</td>
+                            <td class="money">34,988.84</td>
+                            <td class="money trend-down">-39,886.95</td>
+                            <td class="rate-low">-53.3%</td>
+                            <td><span class="badge badge-down">下降</span></td>
+                        </tr>
+                        <tr>
+                            <td>15</td>
+                            <td class="app-name">jdpay_settle_front_drc_sq(Jimdb)</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>xiechuanwei1</td>
+                            <td class="money trend-new">新增</td>
+                            <td class="money">33,823.65</td>
+                            <td class="money trend-up">+33,823.65</td>
+                            <td class="trend-new">新增</td>
+                            <td><span class="badge badge-new">新增</span></td>
+                        </tr>
+                        <tr>
+                            <td>16</td>
+                            <td class="app-name">sun-activity</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>yuhesong</td>
+                            <td class="money">69,538.80</td>
+                            <td class="money">32,955.19</td>
+                            <td class="money trend-down">-36,583.61</td>
+                            <td class="rate-low">-52.6%</td>
+                            <td><span class="badge badge-down">下降</span></td>
+                        </tr>
+                        <tr>
+                            <td>17</td>
+                            <td class="app-name">oriondata.jd.local</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>huangming64</td>
+                            <td class="money">29,728.10</td>
+                            <td class="money">30,657.60</td>
+                            <td class="money trend-up">+929.51</td>
+                            <td class="rate-high">+3.1%</td>
+                            <td><span class="badge badge-up">增长</span></td>
+                        </tr>
+                        <tr>
+                            <td>18</td>
+                            <td class="app-name">jdpay-verification-center</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>zhaozibo6</td>
+                            <td class="money">7,255.97</td>
+                            <td class="money">29,817.79</td>
+                            <td class="money trend-up">+22,561.82</td>
+                            <td class="rate-high">+310.9%</td>
+                            <td><span class="badge badge-up">增长</span></td>
+                        </tr>
+                        <tr>
+                            <td>19</td>
+                            <td class="app-name">jdpay_settle_front(Jimdb)</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>xiechuanwei1</td>
+                            <td class="money trend-new">新增</td>
+                            <td class="money">29,595.69</td>
+                            <td class="money trend-up">+29,595.69</td>
+                            <td class="trend-new">新增</td>
+                            <td><span class="badge badge-new">新增</span></td>
+                        </tr>
+                        <tr>
+                            <td>20</td>
+                            <td class="app-name">paytrade-preheat</td>
+                            <td class="dept">京东集团-京东科技-金融科技事业群-金融科技研发部-支付方案研发部</td>
+                            <td>caiyongle</td>
+                            <td class="money">71,467.61</td>
+                            <td class="money">28,320.79</td>
+                            <td class="money trend-down">-43,146.83</td>
+                            <td class="rate-low">-60.4%</td>
+                            <td><span class="badge badge-down">下降</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>二、TOP20应用增减情况统计</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-number">10</div>
+                    <div class="stat-label">费用增长应用</div>
+                    <div class="stat-percent">占比 50.0%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">10</div>
+                    <div class="stat-label">费用下降应用</div>
+                    <div class="stat-percent">占比 50.0%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">0</div>
+                    <div class="stat-label">费用持平应用</div>
+                    <div class="stat-percent">占比 0.0%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">2</div>
+                    <div class="stat-label">26年新增应用</div>
+                    <div class="stat-percent">占比 10.0%</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>三、典型应用案例</h2>
+            <div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));">
+                <div class="stat-card" style="background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);">
+                    <div class="stat-label">增长最多</div>
+                    <div class="stat-number" style="font-size: 20px; margin-top: 8px;">pay-product-front</div>
+                    <div class="stat-percent" style="font-size: 16px; opacity: 1;">+71,278.78 元 (+464.3%)</div>
+                </div>
+                <div class="stat-card" style="background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%);">
+                    <div class="stat-label">下降最多</div>
+                    <div class="stat-number" style="font-size: 20px; margin-top: 8px;">hachi</div>
+                    <div class="stat-percent" style="font-size: 16px; opacity: 1;">-411,479.78 元 (-77.5%)</div>
+                </div>
+                <div class="stat-card" style="background: linear-gradient(135deg, #f39c12 0%, #d68910 100%);">
+                    <div class="stat-label">新增高费用</div>
+                    <div class="stat-number" style="font-size: 18px; margin-top: 8px;">jdpay_settle_front_drc_sq</div>
+                    <div class="stat-percent" style="font-size: 16px; opacity: 1;">26年4月费用 33,823.65 元</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>四、核心结论</h2>
+            <ul class="conclusions">
+                <li><strong>TOP20整体费用下降：</strong>TOP20应用总费用从 2,395,407.76 元减少至 1,745,081.96 元，环比下降 650,325.80 元（-27.1%），成本优化效果显著</li>
+                <li><strong>趋势分化明显：</strong>10个应用费用增长，10个下降，增减各占一半，内部结构调整明显</li>
+                <li><strong>存量应用为主：</strong>18个为存量应用（90.0%），仅2个为26年新增应用，核心应用相对稳定</li>
+                <li><strong>个别应用变化剧烈：</strong>pay-product-front 费用增长464.3%，dual-command-trade 增长519.9%，需关注业务驱动因素</li>
+                <li><strong>高费用应用缩减明显：</strong>hachi 费用下降77.5%（-41.1万元），是降幅最大的应用，体现资源回收成效</li>
+                <li><strong>费用集中度高：</strong>TOP20应用费用占26年4月所有应用总费用的 63.1%，头部应用管理至关重要</li>
+            </ul>
+        </div>
+    </div>
+    <script>
+        function exportExcel() {
+            const table = document.getElementById('main-table');
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.table_to_sheet(table);
+
+            const colWidths = [
+                { wch: 5 }, { wch: 32 }, { wch: 45 }, { wch: 14 },
+                { wch: 18 }, { wch: 18 }, { wch: 16 }, { wch: 12 }, { wch: 8 }
+            ];
+            ws['!cols'] = colWidths;
+
+            XLSX.utils.book_append_sheet(wb, ws, 'TOP20费用环比分析');
+            XLSX.writeFile(wb, '26年4月与25年5月费用TOP20应用环比增减分析.xlsx');
+        }
+
+        document.querySelectorAll('th.sortable').forEach(th => {
+            th.addEventListener('click', function () {
+                const table = this.closest('table');
+                const tbody = table.querySelector('tbody');
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+                const colIdx = parseInt(this.dataset.col);
+                const type = this.dataset.type;
+
+                const isAsc = this.classList.contains('asc');
+                table.querySelectorAll('th.sortable').forEach(h => h.classList.remove('asc', 'desc'));
+                this.classList.add(isAsc ? 'desc' : 'asc');
+                const dir = isAsc ? -1 : 1;
+
+                rows.sort((a, b) => {
+                    const cellA = a.children[colIdx];
+                    const cellB = b.children[colIdx];
+                    let valA, valB;
+
+                    if (type === 'money') {
+                        valA = parseFloat(cellA.textContent.replace(/[+,新增]/g, '')) || 0;
+                        valB = parseFloat(cellB.textContent.replace(/[+,新增]/g, '')) || 0;
+                    } else if (type === 'rate') {
+                        const txtA = cellA.textContent.replace(/[+%]/g, '');
+                        const txtB = cellB.textContent.replace(/[+%]/g, '');
+                        valA = txtA === '新增' ? 9999 : parseFloat(txtA) || 0;
+                        valB = txtB === '新增' ? 9999 : parseFloat(txtB) || 0;
+                    } else if (type === 'trend') {
+                        const order = { '新增': 3, '增长': 2, '下降': 1 };
+                        valA = order[cellA.textContent.trim()] || 0;
+                        valB = order[cellB.textContent.trim()] || 0;
+                    }
+
+                    return (valA - valB) * dir;
+                });
+
+                rows.forEach(row => tbody.appendChild(row));
+            });
+        });
+    </script>
+</body>
+</html>
