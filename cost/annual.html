@@ -286,7 +286,7 @@
     <div class="draggable-panel" id="panel1" style="left: 10px; top: calc(70vh); z-index: 11; width: calc(100vw - 30px); height: calc(30vh - 20px);">
         <h2 class="panel-header">📝 JSON数据录入（修改后自动刷新）</h2>
         <textarea id="jsonInput" class="w-full p-2 border border-gray-200 rounded font-mono text-sm" style="height: calc(100% - 52px);"></textarea>
-        <div class="json-hint" id="jsonHint">格式：{"2025": [1月,…,12月], "2026": [1月,…,12月]}，未录入月份填 null</div>
+        <div class="json-hint" id="jsonHint">格式：{"2025": [1月,2月,...], "2026": [1月,2月,...]}，数组长度决定显示月份数</div>
     </div>
 </div>
 
@@ -453,22 +453,27 @@
     function refreshChart() {
         const inputEl = document.getElementById('jsonInput');
         const hintEl = document.getElementById('jsonHint');
-        const defaultHint = '格式：{"2025": [1月,…,12月], "2026": [1月,…,12月]}，未录入月份填 null';
+        const defaultHint = '格式：{"2025": [1月,2月,...], "2026": [1月,2月,...]}，数组长度决定显示月份数';
         try {
             const inputData = JSON.parse(inputEl.value);
             const data2025 = inputData["2025"] || [];
             const data2026 = inputData["2026"] || [];
-            if (data2025.length !== 12 || data2026.length !== 12) {
+            const monthCount = Math.max(data2025.length, data2026.length);
+            if (monthCount === 0 || monthCount > 12) {
                 inputEl.classList.add('error');
-                hintEl.textContent = '错误：2025 和 2026 数组长度均须为 12';
+                hintEl.textContent = '错误：数组长度须在 1~12 之间';
                 hintEl.classList.add('error-msg');
                 return;
             }
+            // 补齐较短的数组
+            while (data2025.length < monthCount) data2025.push(null);
+            while (data2026.length < monthCount) data2026.push(null);
             inputEl.classList.remove('error');
             hintEl.textContent = defaultHint;
             hintEl.classList.remove('error-msg');
-            renderChart(data2025, data2026);
-            renderTable(data2025, data2026);
+            const months = monthList.slice(0, monthCount);
+            renderChart(data2025, data2026, months);
+            renderTable(data2025, data2026, months);
         } catch (e) {
             inputEl.classList.add('error');
             hintEl.textContent = 'JSON 格式错误：' + e.message;
@@ -476,7 +481,7 @@
         }
     }
 
-    function renderChart(data2025, data2026) {
+    function renderChart(data2025, data2026, months) {
         const ratioData = data2025.map((val, idx) => {
             const c26 = data2026[idx];
             return (val && val !== 0 && c26 !== null) ? parseFloat((((c26 - val) / val) * 100).toFixed(2)) : null;
@@ -541,7 +546,7 @@
                 textStyle: { color: tc.text, fontSize: 12 }
             },
             xAxis: {
-                type: 'category', data: monthList,
+                type: 'category', data: months,
                 axisLabel: { fontSize: 12, color: tc.text, margin: 10 },
                 axisLine: { lineStyle: { color: tc.axisLine, width: 1 } },
                 axisTick: { show: true, lineStyle: { color: tc.axisLine }, alignWithLabel: true },
@@ -609,7 +614,7 @@
         myChart.setOption(option, true);
     }
 
-    function renderTable(data2025, data2026) {
+    function renderTable(data2025, data2026, months) {
         const total25 = parseFloat(data2025.reduce((s, v) => s + (v || 0), 0).toFixed(2));
         const total26 = parseFloat(data2026.reduce((s, v) => s + (v || 0), 0).toFixed(2));
         const totalRatio = total25 > 0 ? (((total26 - total25) / total25) * 100).toFixed(2) : null;
@@ -665,7 +670,7 @@
                 </tr></thead><tbody>`;
 
         const currentMonth = new Date().getMonth(); // 0-indexed: 0=Jan, 4=May
-        monthList.forEach((m, i) => {
+        months.forEach((m, i) => {
             const c25 = data2025[i], c26 = data2026[i];
             let r = "-", cls = "text-gray-400 dark:text-gray-500";
             const isForecast = c26 !== null && c26 !== undefined && i >= currentMonth;
