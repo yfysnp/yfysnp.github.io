@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JSON 在线解析 - JDDO</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        :root {
+            --bg: #1e1e2e;
+            --panel: #27283b;
+            --text: #fefefe;
+            --muted: #a0a0c0;
+            --accent: #89b4fa;
+            --border: #44475a;
+            --error: #ff6b6b;
+            --hl-key: #8be9fd;
+            --hl-string: #50fa7b;
+            --hl-number: #ffb86c;
+            --hl-bool: #ff79c6;
+            --hl-null: #bd93f9;
+            --status-bar: #6c6e80;
+        }
+        .light-mode {
+            --bg: #f8f9fa;
+            --panel: #ffffff;
+            --text: #212529;
+            --muted: #6c757d;
+            --accent: #007bff;
+            --border: #e9ecef;
+            --error: #d6336c;
+            --hl-key: #0b7285;
+            --hl-string: #2b8a3e;
+            --hl-number: #d9480f;
+            --hl-bool: #ae3ec9;
+            --hl-null: #5f3dc4;
+            --status-bar: #adb5bd;
+        }
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0; padding: 0;
+            height: 100%;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            overflow: hidden;
+        }
+        header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 10px 20px;
+            border-bottom: 1px solid var(--border);
+            background: var(--panel);
+            user-select: none;
+        }
+        header .title {
+            font-weight: 600;
+            font-size: 14px;
+        }
+        header .title .hl {
+            color: var(--error);
+            font-weight: 600;
+        }
+        header .title .hint {
+            color: var(--muted);
+            font-weight: 400;
+            margin-left: 4px;
+        }
+        header .actions {
+            display: flex; gap: 6px; align-items: center;
+        }
+        header button {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 5px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all .2s;
+        }
+        header button:hover {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+        }
+        header button.danger:hover {
+            background: var(--error);
+            border-color: var(--error);
+        }
+
+        #workspace {
+            display: flex;
+            height: calc(100% - 49px - 28px);
+            position: relative;
+        }
+        #left, #right {
+            min-width: 200px;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        #left { flex: 1; }
+        #right { flex: 1; }
+
+        #input {
+            flex: 1;
+            width: 100%;
+            border: none;
+            outline: none;
+            resize: none;
+            padding: 14px;
+            background: var(--bg);
+            color: var(--text);
+            font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            border: 1px solid var(--border);
+            border-right: none;
+        }
+        #right-status {
+            padding: 6px 14px;
+            background: var(--status-bar);
+            color: #fff;
+            font-size: 12px;
+            border: 1px solid var(--border);
+            border-bottom: none;
+            border-left: none;
+        }
+        #right-status.error { background: var(--error); }
+        #right-status.success { background: #4c8d4c; }
+        #output {
+            flex: 1;
+            overflow: auto;
+            padding: 14px;
+            background: var(--bg);
+            font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            border: 1px solid var(--border);
+            border-top: none;
+            border-left: none;
+        }
+
+        #divider {
+            width: 6px;
+            cursor: col-resize;
+            background: var(--panel);
+            position: relative;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #divider::before {
+            content: ":::::";
+            color: var(--muted);
+            font-size: 8px;
+            letter-spacing: -2px;
+            transform: rotate(90deg);
+        }
+
+        footer {
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            background: var(--panel);
+            border-top: 1px solid var(--border);
+            color: var(--muted);
+            font-size: 12px;
+        }
+        footer a { color: var(--accent); text-decoration: none; }
+
+        /* tree view */
+        .tree { font-family: inherit; }
+        .tree .line { white-space: pre-wrap; word-break: break-all; }
+        .tree .toggle {
+            display: inline-block;
+            width: 12px;
+            cursor: pointer;
+            color: var(--muted);
+            user-select: none;
+            text-align: center;
+        }
+        .tree .toggle.hidden { visibility: hidden; }
+        .tree .key { color: var(--hl-key); }
+        .tree .str { color: var(--hl-string); }
+        .tree .num { color: var(--hl-number); }
+        .tree .bool { color: var(--hl-bool); }
+        .tree .null { color: var(--hl-null); }
+        .tree .punc { color: var(--muted); }
+        .tree .meta { color: var(--muted); font-style: italic; margin-left: 6px; font-size: 11px; }
+        .tree .children { padding-left: 18px; border-left: 1px dashed var(--border); margin-left: 4px; }
+        .tree .children.collapsed { display: none; }
+        .tree .collapsed-summary { color: var(--muted); cursor: pointer; }
+
+        /* options dropdown */
+        .menu {
+            position: relative;
+        }
+        .menu-panel {
+            position: absolute;
+            top: calc(100% + 6px);
+            right: 0;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 0;
+            min-width: 180px;
+            display: none;
+            z-index: 10;
+            box-shadow: 0 8px 20px rgba(0,0,0,.3);
+        }
+        .menu-panel.open { display: block; }
+        .menu-item {
+            padding: 8px 14px;
+            cursor: pointer;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            color: var(--text);
+        }
+        .menu-item:hover { background: rgba(137,180,250,0.15); }
+        .menu-item .shortcut { color: var(--muted); font-size: 11px; }
+
+        .light-mode #input,
+        .light-mode #output { background: #fff; }
+        .light-mode .menu-item:hover { background: rgba(0,123,255,0.1); }
+    </style>
+</head>
+<body class="dark-mode">
+    <header>
+        <div class="title">
+            JSON 在线解析<span class="hl">(双击自动格式化)</span>
+            <span class="hint">按（Ctrl + D） 或 <a href="/" style="color: var(--error); text-decoration: none;">返回首页</a></span>
+        </div>
+        <div class="actions">
+            <button id="btn-format" title="格式化 (Ctrl+D)"><i class="fas fa-indent"></i> 格式化</button>
+            <button id="btn-compress" title="压缩"><i class="fas fa-compress-alt"></i> 压缩</button>
+            <button id="btn-escape" title="转义"><i class="fas fa-quote-right"></i> 转义</button>
+            <button id="btn-unescape" title="去除转义"><i class="fas fa-undo"></i> 去转义</button>
+            <button id="btn-copy" title="复制结果"><i class="fas fa-copy"></i> 复制</button>
+            <button id="btn-clear" class="danger" title="清空"><i class="fas fa-trash"></i> 清空</button>
+            <button id="btn-theme" title="切换主题"><i class="fas fa-sun"></i></button>
+            <div class="menu">
+                <button id="btn-options">选项 <i class="fas fa-caret-down"></i></button>
+                <div class="menu-panel" id="options-panel">
+                    <div class="menu-item" data-action="expand-all">
+                        <span>全部展开</span><span class="shortcut">E</span>
+                    </div>
+                    <div class="menu-item" data-action="collapse-all">
+                        <span>全部折叠</span><span class="shortcut">C</span>
+                    </div>
+                    <div class="menu-item" data-action="sample">
+                        <span>载入示例</span>
+                    </div>
+                    <div class="menu-item" data-action="sort-keys">
+                        <span>按 Key 排序</span>
+                    </div>
+                    <div class="menu-item" data-action="parse-strings">
+                        <span>递归解析嵌套 JSON 字符串</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <div id="workspace">
+        <div id="left">
+            <textarea id="input" placeholder="在此粘贴/输入 JSON，回车或修改即自动解析。双击可自动格式化，按 Ctrl+D 等价。" spellcheck="false"></textarea>
+        </div>
+        <div id="divider"></div>
+        <div id="right">
+            <div id="right-status">String is empty</div>
+            <div id="output"></div>
+        </div>
+    </div>
+
+    <footer>
+        <span><i class="fas fa-info-circle"></i> 本地解析，数据不离开浏览器</span>
+        <span>JDDO · JSON Tools</span>
+    </footer>
+
+    <script>
+        const $ = id => document.getElementById(id);
+        const input = $('input');
+        const output = $('output');
+        const status = $('right-status');
+
+        // ------------- core tree render -------------
+        function escapeHtml(s) {
+            return String(s).replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
+        }
+
+        function renderTree(value, opts = {}) {
+            const container = document.createElement('div');
+            container.className = 'tree';
+            container.appendChild(renderNode(value, opts, 0));
+            return container;
+        }
+
+        function renderNode(value, opts, depth) {
+            const wrap = document.createElement('div');
+            wrap.className = 'line';
+
+            if (value === null) {
+                wrap.innerHTML = '<span class="toggle hidden">▸</span><span class="null">null</span>';
+                return wrap;
+            }
+            const t = typeof value;
+            if (t === 'string') {
+                let displayed = value;
+                if (opts.parseStrings) {
+                    const trimmed = value.trim();
+                    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+                        (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+                        try {
+                            const parsed = JSON.parse(trimmed);
+                            return renderNode(parsed, opts, depth);
+                        } catch (e) { /* keep as string */ }
+                    }
+                }
+                wrap.innerHTML = `<span class="toggle hidden">▸</span><span class="str">"${escapeHtml(displayed)}"</span>`;
+                return wrap;
+            }
+            if (t === 'number') {
+                wrap.innerHTML = `<span class="toggle hidden">▸</span><span class="num">${value}</span>`;
+                return wrap;
+            }
+            if (t === 'boolean') {
+                wrap.innerHTML = `<span class="toggle hidden">▸</span><span class="bool">${value}</span>`;
+                return wrap;
+            }
+            if (Array.isArray(value)) {
+                return renderContainer(value, opts, depth, true);
+            }
+            if (t === 'object') {
+                return renderContainer(value, opts, depth, false);
+            }
+            wrap.textContent = String(value);
+            return wrap;
+        }
+
+        function renderContainer(value, opts, depth, isArray) {
+            const wrap = document.createElement('div');
+            wrap.className = 'line';
+
+            const keys = isArray ? value.map((_, i) => i) : Object.keys(value);
+            if (opts.sortKeys && !isArray) keys.sort();
+
+            const open = isArray ? '[' : '{';
+            const close = isArray ? ']' : '}';
+
+            const header = document.createElement('div');
+            const toggle = document.createElement('span');
+            toggle.className = 'toggle';
+            toggle.textContent = '▾';
+            header.appendChild(toggle);
+
+            const summary = document.createElement('span');
+            summary.innerHTML = `<span class="punc">${open}</span><span class="meta">${keys.length} ${isArray ? 'items' : 'keys'}</span>`;
+            header.appendChild(summary);
+
+            const children = document.createElement('div');
+            children.className = 'children';
+
+            keys.forEach((k, idx) => {
+                const child = document.createElement('div');
+                child.className = 'line';
+                const childInner = renderNode(value[k], opts, depth + 1);
+                if (!isArray) {
+                    const kspan = document.createElement('span');
+                    kspan.innerHTML = `<span class="key">"${escapeHtml(k)}"</span><span class="punc">: </span>`;
+                    if (childInner.firstChild && childInner.firstChild.classList && childInner.firstChild.classList.contains('toggle')) {
+                        childInner.insertBefore(kspan, childInner.firstChild.nextSibling);
+                    } else {
+                        childInner.prepend(kspan);
+                    }
+                } else {
+                    const kspan = document.createElement('span');
+                    kspan.innerHTML = `<span class="key">${k}</span><span class="punc">: </span>`;
+                    if (childInner.firstChild && childInner.firstChild.classList && childInner.firstChild.classList.contains('toggle')) {
+                        childInner.insertBefore(kspan, childInner.firstChild.nextSibling);
+                    } else {
+                        childInner.prepend(kspan);
+                    }
+                }
+                if (idx < keys.length - 1) {
+                    childInner.appendChild(Object.assign(document.createElement('span'), { className: 'punc', textContent: ',' }));
+                }
+                child.appendChild(childInner);
+                children.appendChild(child);
+            });
+
+            const footer = document.createElement('div');
+            footer.innerHTML = `<span class="toggle hidden">▸</span><span class="punc">${close}</span>`;
+
+            toggle.addEventListener('click', () => {
+                const collapsed = children.classList.toggle('collapsed');
+                toggle.textContent = collapsed ? '▸' : '▾';
+                footer.style.display = collapsed ? 'none' : '';
+                summary.querySelector('.meta').style.display = collapsed ? '' : 'none';
+            });
+            summary.querySelector('.meta').style.display = 'none';
+
+            wrap.appendChild(header);
+            wrap.appendChild(children);
+            wrap.appendChild(footer);
+            return wrap;
+        }
+
+        // ------------- state -------------
+        const state = {
+            sortKeys: false,
+            parseStrings: false,
+        };
+
+        function setStatus(text, kind) {
+            status.textContent = text;
+            status.className = '';
+            if (kind) status.classList.add(kind);
+        }
+
+        function parseAndRender() {
+            const text = input.value;
+            output.innerHTML = '';
+            if (!text.trim()) {
+                setStatus('String is empty');
+                return;
+            }
+            try {
+                const data = JSON.parse(text);
+                setStatus('解析成功 ✓ 类型: ' + (Array.isArray(data) ? 'Array' : typeof data), 'success');
+                output.appendChild(renderTree(data, state));
+            } catch (e) {
+                setStatus('解析失败：' + e.message, 'error');
+            }
+        }
+
+        // ------------- actions -------------
+        function format() {
+            try {
+                const obj = JSON.parse(input.value);
+                input.value = JSON.stringify(obj, null, 2);
+                parseAndRender();
+            } catch (e) {
+                setStatus('格式化失败：' + e.message, 'error');
+            }
+        }
+        function compress() {
+            try {
+                const obj = JSON.parse(input.value);
+                input.value = JSON.stringify(obj);
+                parseAndRender();
+            } catch (e) {
+                setStatus('压缩失败：' + e.message, 'error');
+            }
+        }
+        function escapeText() {
+            input.value = JSON.stringify(input.value).slice(1, -1);
+            parseAndRender();
+        }
+        function unescapeText() {
+            try {
+                input.value = JSON.parse('"' + input.value.replace(/^"|"$/g, '') + '"');
+                parseAndRender();
+            } catch (e) {
+                setStatus('去转义失败：' + e.message, 'error');
+            }
+        }
+        function copyOutput() {
+            navigator.clipboard.writeText(input.value).then(() => {
+                const old = status.textContent;
+                setStatus('已复制到剪贴板 ✓', 'success');
+                setTimeout(() => parseAndRender(), 1200);
+            });
+        }
+        function clearAll() {
+            input.value = '';
+            parseAndRender();
+        }
+
+        const SAMPLE = {
+            name: "JDDO",
+            version: "1.0.0",
+            features: ["格式化", "压缩", "转义", "树形展示"],
+            owner: { erp: "yangfeiyu", team: "支付" },
+            stats: { users: 1234, online: true, since: null },
+            payload: '{"nested":"如启用递归解析会被展开"}'
+        };
+
+        // ------------- events -------------
+        input.addEventListener('input', parseAndRender);
+        input.addEventListener('dblclick', format);
+
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+                e.preventDefault();
+                format();
+            }
+        });
+
+        $('btn-format').addEventListener('click', format);
+        $('btn-compress').addEventListener('click', compress);
+        $('btn-escape').addEventListener('click', escapeText);
+        $('btn-unescape').addEventListener('click', unescapeText);
+        $('btn-copy').addEventListener('click', copyOutput);
+        $('btn-clear').addEventListener('click', clearAll);
+
+        $('btn-theme').addEventListener('click', () => {
+            document.body.classList.toggle('dark-mode');
+            document.body.classList.toggle('light-mode');
+            const icon = $('btn-theme').querySelector('i');
+            icon.classList.toggle('fa-sun');
+            icon.classList.toggle('fa-moon');
+        });
+
+        const optBtn = $('btn-options');
+        const optPanel = $('options-panel');
+        optBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            optPanel.classList.toggle('open');
+        });
+        document.addEventListener('click', () => optPanel.classList.remove('open'));
+        optPanel.addEventListener('click', (e) => {
+            const action = e.target.closest('.menu-item')?.dataset.action;
+            if (!action) return;
+            optPanel.classList.remove('open');
+            if (action === 'expand-all') {
+                output.querySelectorAll('.children.collapsed').forEach(c => {
+                    c.classList.remove('collapsed');
+                    const t = c.previousSibling?.querySelector?.('.toggle');
+                    if (t) t.textContent = '▾';
+                });
+            } else if (action === 'collapse-all') {
+                output.querySelectorAll('.children').forEach(c => {
+                    c.classList.add('collapsed');
+                    const t = c.previousSibling?.querySelector?.('.toggle');
+                    if (t) t.textContent = '▸';
+                });
+            } else if (action === 'sample') {
+                input.value = JSON.stringify(SAMPLE, null, 2);
+                parseAndRender();
+            } else if (action === 'sort-keys') {
+                state.sortKeys = !state.sortKeys;
+                parseAndRender();
+                setStatus('按 Key 排序: ' + (state.sortKeys ? '开' : '关'), 'success');
+            } else if (action === 'parse-strings') {
+                state.parseStrings = !state.parseStrings;
+                parseAndRender();
+                setStatus('递归解析嵌套字符串: ' + (state.parseStrings ? '开' : '关'), 'success');
+            }
+        });
+
+        // ------------- divider drag -------------
+        const divider = $('divider');
+        const workspace = $('workspace');
+        let dragging = false;
+        divider.addEventListener('mousedown', (e) => {
+            dragging = true;
+            document.body.style.userSelect = 'none';
+            document.body.style.cursor = 'col-resize';
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!dragging) return;
+            const rect = workspace.getBoundingClientRect();
+            const ratio = (e.clientX - rect.left) / rect.width;
+            const clamped = Math.max(0.15, Math.min(0.85, ratio));
+            $('left').style.flex = `0 0 ${clamped * 100}%`;
+            $('right').style.flex = `0 0 ${(1 - clamped) * 100 - 0.5}%`;
+        });
+        document.addEventListener('mouseup', () => {
+            dragging = false;
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
+        });
+
+        parseAndRender();
+    </script>
+</body>
+</html>
