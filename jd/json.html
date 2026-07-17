@@ -444,13 +444,108 @@
         }
 
         // ------------- actions -------------
+        // 宽松格式化：即使 JSON 语法非法（比如 key 没引号、单引号、结尾逗号、注释等），
+        // 也按 {}[], 括号语义做换行缩进，仅调整空白，不改动字面内容。
+        function looseFormat(text) {
+            let out = '';
+            let indent = 0;
+            let inStr = false;
+            let strChar = '';
+            let inLineComment = false;
+            let inBlockComment = false;
+            const pad = () => '  '.repeat(indent);
+            const trimTrailingWS = () => { out = out.replace(/[ \t]+$/, ''); };
+
+            for (let i = 0; i < text.length; i++) {
+                const c = text[i];
+                const next = text[i + 1];
+
+                if (inLineComment) {
+                    out += c;
+                    if (c === '\n') { inLineComment = false; out += pad(); }
+                    continue;
+                }
+                if (inBlockComment) {
+                    out += c;
+                    if (c === '*' && next === '/') { out += '/'; i++; inBlockComment = false; }
+                    continue;
+                }
+                if (inStr) {
+                    out += c;
+                    if (c === '\\' && i + 1 < text.length) { out += text[i + 1]; i++; continue; }
+                    if (c === strChar) inStr = false;
+                    continue;
+                }
+
+                if (c === '/' && next === '/') { inLineComment = true; out += '//'; i++; continue; }
+                if (c === '/' && next === '*') { inBlockComment = true; out += '/*'; i++; continue; }
+
+                if (c === '"' || c === "'" || c === '`') {
+                    inStr = true; strChar = c; out += c; continue;
+                }
+
+                if (c === '{' || c === '[') {
+                    out += c;
+                    // 跳过后续空白，若紧接闭合括号则保持空容器不换行
+                    let j = i + 1;
+                    while (j < text.length && /\s/.test(text[j])) j++;
+                    const closer = c === '{' ? '}' : ']';
+                    if (text[j] === closer) { out += closer; i = j; continue; }
+                    indent++;
+                    out += '\n' + pad();
+                    continue;
+                }
+                if (c === '}' || c === ']') {
+                    trimTrailingWS();
+                    if (!out.endsWith('\n')) out += '\n';
+                    indent = Math.max(0, indent - 1);
+                    out += pad() + c;
+                    continue;
+                }
+                if (c === ',') {
+                    trimTrailingWS();
+                    out += ',\n' + pad();
+                    // 吃掉紧随的空白
+                    while (i + 1 < text.length && /\s/.test(text[i + 1])) i++;
+                    continue;
+                }
+                if (c === ':') {
+                    trimTrailingWS();
+                    out += ': ';
+                    while (i + 1 < text.length && /[ \t]/.test(text[i + 1])) i++;
+                    continue;
+                }
+                if (c === '\n' || c === '\r') {
+                    // 折叠原有换行，交由结构控制换行
+                    continue;
+                }
+                if (c === ' ' || c === '\t') {
+                    // 折叠多空格
+                    if (!out.endsWith(' ') && !out.endsWith('\n') && out.length > 0) out += ' ';
+                    continue;
+                }
+                out += c;
+            }
+            return out;
+        }
+
         function format() {
+            const raw = input.value;
+            if (!raw.trim()) { setStatus('String is empty'); return; }
             try {
-                const obj = JSON.parse(input.value);
+                const obj = JSON.parse(raw);
                 input.value = JSON.stringify(obj, null, 2);
                 parseAndRender();
             } catch (e) {
-                setStatus('格式化失败：' + e.message, 'error');
+                // 兜底：非法 JSON 也做换行缩进，帮助人眼观察结构
+                try {
+                    const loose = looseFormat(raw);
+                    if (loose && loose !== raw) input.value = loose;
+                    parseAndRender();
+                    setStatus('JSON 非法，已按结构换行（未验证正确性）：' + e.message, 'error');
+                } catch (e2) {
+                    setStatus('格式化失败：' + e.message, 'error');
+                }
             }
         }
         function compress() {
