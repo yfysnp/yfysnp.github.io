@@ -617,7 +617,8 @@
     function renderTable(data2025, data2026, months) {
         const total25 = parseFloat(data2025.reduce((s, v) => s + (v || 0), 0).toFixed(2));
         const total26 = parseFloat(data2026.reduce((s, v) => s + (v || 0), 0).toFixed(2));
-        const totalRatio = total25 > 0 ? (((total26 - total25) / total25) * 100).toFixed(2) : null;
+        const has26Missing = data2026.some(v => v === null || v === undefined);
+        const totalRatio = (!has26Missing && total25 > 0) ? (((total26 - total25) / total25) * 100).toFixed(2) : null;
         const totalCls = totalRatio !== null ? (parseFloat(totalRatio) >= 0 ? 'text-red-600 dark:text-red-400 font-bold' : 'text-green-600 dark:text-green-400 font-bold') : 'text-gray-400 dark:text-gray-500';
 
         // 仅统计 26年已录入（非null）月份
@@ -688,11 +689,13 @@
                 </tr>`;
         });
 
+        const totalHasForecast = data2026.some((v, i) => v !== null && v !== undefined && i >= currentMonth);
+        const totalForecastTag = totalHasForecast ? ' <span style="background:#fef3c7;color:#d97706;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:600;margin-left:3px;">预测</span>' : '';
         html += `<tr class="border-t-2 border-gray-200 dark:border-gray-600">
                 <td class="border border-gray-200 dark:border-gray-700 p-2 text-center font-bold text-gray-700 dark:text-gray-200" style="font-size:12px;">合计</td>
                 <td class="border border-gray-200 dark:border-gray-700 p-2 text-center font-bold text-gray-700 dark:text-gray-200" style="font-size:12px;">${total25 || "-"}</td>
                 <td class="border border-gray-200 dark:border-gray-700 p-2 text-center font-bold text-gray-700 dark:text-gray-200" style="font-size:12px;">${total26 || "-"}</td>
-                <td class="border border-gray-200 dark:border-gray-700 p-2 text-center ${totalCls}" style="font-size:12px;">${totalRatio ? totalRatio + '%' : '-'}</td>
+                <td class="border border-gray-200 dark:border-gray-700 p-2 text-center ${totalCls}" style="font-size:12px;">${totalRatio ? totalRatio + '%' + totalForecastTag : '-'}</td>
             </tr>`;
 
         html += `</tbody></table>`;
