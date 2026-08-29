@@ -1,0 +1,54 @@
+{
+  "_说明": "这里只列 inspector.py 当前真正会读的配置项。未实现的开关不放进来，避免改了没反应又不报错。",
+  "enabled": true,
+  "interval": 30000,
+  "_dryRun说明": "true 时仍然调真实发送脚本但带 --dry-run，走完整链路只是不投递。灰度期保持 true。",
+  "dryRun": true,
+  "_groups说明": "include 为空数组 = 巡检全部群；填了群号就只巡检名单内的群。灰度先放一个群。",
+  "groups": {
+    "include": []
+  },
+  "_quietHours说明": "静默时段内非 WARN 事件只写日志不发送；不记已发状态，出了时段还能补发。支持跨零点如 22:00-08:00。留空或删掉即不启用。",
+  "quietHours": "00:00-08:00",
+  "thresholds": {
+    "_ACTIVE_WINDOW_MS": "步骤0：这么久没活动就当僵尸群不巡检",
+    "ACTIVE_WINDOW_MS": 1800000,
+    "_USER_QUIET_MS": "步骤F：对客静默这么久才提醒进行中",
+    "USER_QUIET_MS": 300000,
+    "_COOLDOWN_MS": "同一会话同一类事件的冷却。实测证明必需：只靠 signature 去重时，数字人每播报一次进度 signature 就变，6 分钟的任务发了 4 条提醒",
+    "COOLDOWN_MS": 1800000,
+    "_GROUP_RATE_WINDOW_MS": "同群限流的统计窗口。落盘裁剪窗口会自动取 max(24小时, 本窗口)——窗口配得比 24 小时长也不会把该计数的记录提前砍掉（踩过：裁剪写死 24 小时曾让限流彻底失效）",
+    "GROUP_RATE_WINDOW_MS": 3600000,
+    "_GROUP_RATE_MAX": "同一个群在窗口内最多发几条（REMIND+ALERT 合计）。这是唯一一道防「往群里灌消息」的闸门，生产值 3；调试期调大（如 60）等于关掉它，切生产前务必改回来",
+    "GROUP_RATE_MAX": 3,
+    "_新增说明": "以下阈值均由实测分布推导，不是照抄方案；改动前先看 inspector.py 里 THRESHOLD_DEFAULTS 对应注释",
+    "_SUB_REPORT_LAG_MS": "派活后基础 Agent 还在 running 时，多久没回报才告警（兜底宽限）。实测 64 次派活：中位 15 秒、P90 80 秒、最大 333 秒——方案给的 90 秒会对 11% 正常派活误报，所以放到 10 分钟",
+    "SUB_REPORT_LAG_MS": 600000,
+    "_SUB_DONE_LAG_MS": "基础 Agent 已不在 running（跑完了却没回报）时的宽限。已经停了还不回报，等 90 秒就够",
+    "SUB_DONE_LAG_MS": 90000,
+    "_INTER_SESSION_ACK_MS": "收到基础 Agent 回报后，多久既没转达用户也没明示 NO_REPLY 算异常。实测 87 次回报的处理滞后：中位 19 秒、最大 364 秒——方案给的 60 秒会对 4% 误报，所以放到 10 分钟",
+    "INTER_SESSION_ACK_MS": 600000,
+    "_USER_REPLY_ACK_MS": "用户说完话后，数字人多久没任何回应就算异常（铁律二-1 的判定窗口）",
+    "USER_REPLY_ACK_MS": 60000,
+    "_MSG_SWALLOWED_MS": "「消息被吞」判定：网关记的 lastInteractionAt 比消息流里的 tUser 晚这么多，就认定网关收到了消息但没进会话。正常两者只差 0~1 秒（实测 4 个群分别 -1/0/0/-1 秒），留 2 分钟余量给落盘和排队",
+    "MSG_SWALLOWED_MS": 120000,
+    "_MODEL_ERROR_GRACE_MS": "模型调用异常后留给 openclaw 自动重试/failover 的宽限，自愈了就不打扰用户。注意断网测试要熬过这个窗口加重试预算才会真触发（实测断 25 秒会被重试救回来）",
+    "MODEL_ERROR_GRACE_MS": 30000,
+    "_CC_STALE_MS": "CC 卡死判定：cc-config 的 session.json 显示在跑、但超过这么久没有任何触碰（max_last_ts 不动）就算卡死",
+    "CC_STALE_MS": 180000
+  },
+  "_log说明": "主日志落盘与轮转。file 留空或删掉 = 只打 stdout（手工在终端跑时输出已在眼前，不必再写一份）。部署成常驻服务时务必填上——5 秒一轮、每轮至少一行，一天一万七千行，不轮转迟早写满磁盘。maxBytes 超限就轮转成 .1/.2/…，超过 keep 份的历史自动删除；errors.jsonl 复用同一个 keep。启动时会顺手清掉把 keep 调小之后残留的超额历史。",
+  "log": {
+    "file": "~/.openclaw-inspector/inspector.log",
+    "maxBytes": 10485760,
+    "keep": 5
+  },
+  "_remind说明": "进行中提醒（REMIND_LONG_RUNNING）总开关，方案 §6.3。默认 true。关掉后这类事件只写日志不投递、也不记已发状态，开关再打开还能补发；ALERT 类不受影响——关掉「进行中提醒」不该连「出故障了」一起关掉。",
+  "remind": {
+    "enabled": true
+  },
+  "_wake说明": "唤起数字人：5 类 ALERT 发完群消息后会让数字人跑一轮继续处理。副作用比发消息重一个量级，方案 §6.3 要求 M4 前默认 false。dryRun=true 时只打印命令、绝不执行（openclaw agent 没有 dry-run 开关）。",
+  "wake": {
+    "enabled": false
+  }
+}
