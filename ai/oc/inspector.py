@@ -60,7 +60,7 @@ import threading
 import time
 import traceback
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # 运行时目录。配置、状态、日志都放这里，不写 ~/.openclaw（巡检器对 openclaw 只读）。
 STATE_DIR = os.path.expanduser("~/.openclaw-inspector")
@@ -89,12 +89,61 @@ def log(msg):
     print(line, flush=True)
     if not _log_file:
         return
+    write_log_line(_log_file, line, _log_max_bytes, _log_keep, _log_keep_days)
+
+
+def write_log_line(path, line, max_bytes, keep, keep_days):
+    """把一行写进按天分文件的日志，顺带做大小轮转和按天清理。
+
+    两层留存并存，各管一件事：
+      按天分文件 —— 决定"这一天的日志在哪个文件里"，方便直接按日期查；
+      大小轮转   —— 兜"某一天异常地大"，同一天内再切成 -1/-2。
+    每次写都重算当天路径，跨零点自动落到新文件，不缓存句柄。
+
+    按天清理不必每行都跑（一天上万行，等于上万次 listdir）：只在换天的那一行做。
+    落盘失败只打一次性的错，不抛 —— 日志写不进去也不该让巡检停摆。
+    """
+    global _log_day_seen
+    target = dated_path(path)
     try:
-        rotate_file(_log_file, _log_max_bytes, _log_keep)
-        with open(_log_file, "a", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        today = datetime.now().strftime("%Y-%m-%d")
+        if _log_day_seen.get(path) != today:
+            _log_day_seen[path] = today
+            cleanup_dated(path, keep_days)
+        rotate_file(target, max_bytes, keep)
+        with open(target, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except OSError as e:
-        print(f"[日志落盘失败] {_log_file}：{e!r}", flush=True)
+        print(f"[日志落盘失败] {target}：{e!r}", flush=True)
+
+
+def log_message_sent(kind, event, human, detail, dry_run):
+    """把真正投递出去的一句话记进独立的话术日志（messages.log，按天分文件）。
+
+    kind 取 "群消息" 或 "唤起数字人"。detail 是投递结果说明。
+    只在**真发**路径上调用（含 dryRun —— 干跑时话术已经成型，正是要核对的东西），
+    被闸门拦下的不记：那些话根本没说出口，混进来会让这份日志失去"说过什么"的语义。
+
+    格式为单行 JSON：话术里带换行（群消息第二行是恢复提示），纯文本多行会把
+    "一次投递一条记录"这个结构破坏掉，事后按行 grep 就对不上了。
+    """
+    if not _messages_log_file:
+        return
+    record = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "kind": kind,
+        "dryRun": bool(dry_run),
+        "event": event.get("type"),
+        "severity": event.get("severity"),
+        "daId": event.get("daId") or human.get("daId"),
+        "groupId": event.get("groupId"),
+        "sessionKey": event.get("sessionKey"),
+        "text": (event.get("text") if kind == "群消息" else wake_message_for(event)),
+        "result": detail,
+    }
+    write_log_line(_messages_log_file, json.dumps(record, ensure_ascii=False),
+                   _log_max_bytes, _log_keep, _log_keep_days)
 
 
 def apply_log_settings(cfg):
@@ -103,7 +152,7 @@ def apply_log_settings(cfg):
     单独抽出来是因为配置支持热加载 —— 改了 log 段要能立刻生效，
     不然改完得重启，就跟"热加载"这个卖点自相矛盾了。
     """
-    global _log_file, _log_max_bytes, _log_keep
+    global _log_file, _log_max_bytes, _log_keep, _log_keep_days, _messages_log_file
     section = (cfg or {}).get("log") or {}
     path = section.get("file")
     _log_file = os.path.expanduser(str(path)) if path else ""
@@ -113,6 +162,13 @@ def apply_log_settings(cfg):
     raw_keep = section.get("keep")
     _log_keep = (int(raw_keep) if isinstance(raw_keep, (int, float)) and raw_keep >= 0
                  else LOG_KEEP_DEFAULT)
+    raw_days = section.get("keepDays")
+    _log_keep_days = (int(raw_days) if isinstance(raw_days, (int, float)) and raw_days >= 0
+                      else LOG_KEEP_DAYS_DEFAULT)
+    # 话术日志默认开着（和主日志不同）：它只在真发时写、量很小，而"发出去的话"
+    # 是事后最需要对账的东西。显式配成空串（messagesFile: ""）才关掉。
+    raw_msgs = section.get("messagesFile", MESSAGES_LOG_DEFAULT)
+    _messages_log_file = os.path.expanduser(str(raw_msgs)) if raw_msgs else ""
     return _log_file, _log_max_bytes, _log_keep
 
 
@@ -165,6 +221,17 @@ ERRORS_MAX_BYTES = 4 * 1024 * 1024
 LOG_MAX_BYTES_DEFAULT = 10 * 1024 * 1024
 LOG_KEEP_DEFAULT = 5
 
+# 按天分文件后保留多少天。日志的主要用途是"回头查某天出了什么"，按天存留才好定位；
+# 大小轮转（.1/.2/…）仍然保留，兜的是"某一天异常地大"，两者不冲突。
+LOG_KEEP_DAYS_DEFAULT = 14
+
+# 话术日志：真正投递出去的每一句话（群消息 + 唤起数字人）都在这里留一份。
+# 独立于主日志的理由：主日志是每轮判定过程的流水（一天上万行），而"到底对用户说了
+# 什么、对数字人说了什么"是需要单独复核和追溯的对象 —— 埋在流水里根本翻不出来。
+# 默认就开（不像主日志那样默认只打屏）：它只在真发时写，一天最多几十行，
+# 而"发出去的话"恰恰是事后最需要对账的东西，不该依赖有没有配。
+MESSAGES_LOG_DEFAULT = os.path.join(STATE_DIR, "messages.log")
+
 
 def rotate_file(path, max_bytes, keep):
     """按大小轮转一个日志文件，并把超出保留份数的历史**删掉**。返回是否轮转了。
@@ -200,6 +267,56 @@ def rotate_file(path, max_bytes, keep):
         return False
 
 
+def dated_path(path, when=None):
+    """把 a/b.log 变成 a/b-YYYY-MM-DD.log（按天分文件）。
+
+    后缀前插日期而不是往后拼（b.log.2026-09-02）：保住 .log 扩展名，编辑器和
+    `*.log` 之类的通配都还能正常认它。没有扩展名时就直接接在后面。
+
+    每次写日志都重新算当天的路径，不缓存句柄 —— 跨零点自动落到新文件，
+    不需要在别处埋一个"该换文件了"的判断。
+    """
+    stamp = (when or datetime.now()).strftime("%Y-%m-%d")
+    root, ext = os.path.splitext(path)
+    return f"{root}-{stamp}{ext}"
+
+
+def cleanup_dated(path, keep_days, now=None):
+    """删掉按天分出来的旧日志，只留最近 keep_days 天（含今天）。返回删掉的份数。
+
+    用文件名里的日期判断，不用 mtime：轮转/拷贝都会动 mtime，文件名才是它真正
+    属于哪一天的凭据。认不出日期的文件一概不碰 —— 宁可留着不删，也不能误删。
+
+    keep_days <= 0 表示不做按天清理（只靠大小轮转）。
+    """
+    if keep_days <= 0:
+        return 0
+    root, ext = os.path.splitext(path)
+    prefix = os.path.basename(root) + "-"
+    directory = os.path.dirname(path) or "."
+    cutoff = (now or datetime.now()).date() - timedelta(days=keep_days - 1)
+    removed = 0
+    try:
+        for name in os.listdir(directory):
+            if not name.startswith(prefix):
+                continue
+            rest = name[len(prefix):]
+            # 允许 <日期><ext> 和 <日期><ext>.1（大小轮转产物）两种形态
+            if ext and not (rest.startswith("") and ext in rest):
+                continue
+            stamp = rest[:10]
+            try:
+                day = datetime.strptime(stamp, "%Y-%m-%d").date()
+            except ValueError:
+                continue          # 认不出日期，不是我们分出来的，别动
+            if day < cutoff:
+                os.remove(os.path.join(directory, name))
+                removed += 1
+    except OSError as e:
+        print(f"[清理按天日志失败] {path}：{e!r}", flush=True)
+    return removed
+
+
 def cleanup_rotated(path, keep):
     """删掉 path.<n> 里 n 超过 keep 的历史文件。返回删掉的份数。
 
@@ -228,6 +345,14 @@ def cleanup_rotated(path, keep):
 _log_file = ""
 _log_max_bytes = LOG_MAX_BYTES_DEFAULT
 _log_keep = LOG_KEEP_DEFAULT
+_log_keep_days = LOG_KEEP_DAYS_DEFAULT
+
+# 话术日志（真发出去的每句话）。默认开着，理由见 MESSAGES_LOG_DEFAULT。
+_messages_log_file = MESSAGES_LOG_DEFAULT
+
+# 每个日志文件上次写入时看到的日期，用来判断"换天了"，只在换天那一行做按天清理
+# （一天上万行，每行都 listdir 太浪费）。
+_log_day_seen = {}
 
 
 def record_error(exc, **context):
@@ -2093,8 +2218,18 @@ WAKE_POLL_SECONDS = 0.5
 # 30 分钟内自动恢复，3 个未恢复的全是真挂起或长时中断。
 SUB_RUN_FAILED_GRACE_MS = 30 * 60 * 1000
 
-# 只考虑这么久内活跃过的基础 Agent 会话（activityTs 距今）。远超这个静默的老会话
-# 即使最后一步是失败，也早已超出"用户在等"的语境。
+# "用户还在等"的活跃窗口：**这个群**最近这么久内有过活动才报。
+#
+# 注意问的是群、不是失败的那个基础 Agent 自己。2026-09-02 群 10233415382 实测：
+# 仓颉 16:21 起跑、16:31 request timed out 超时失败，到 19:14 挂了 163 分钟无人接手，
+# 正是这个告警该覆盖的形态，却一条都没报——旧实现拿"基础 Agent 自己的 activityTs
+# 距今 ≤ 宽限期"当活跃判据，而**失败会话的 activityTs 永久冻结在失败那一刻**，
+# 挂死的任务不可能再有活动。于是"失败越久没人管"越严重，这道门反而越确定地
+# 把它滤掉；活跃窗口又和宽限期同为 30 分钟，命中区间窄到近乎空集。
+# （旧实现还接错了常量：这个门当初就是为独立阈值留的，代码里却复用了 GRACE。）
+#
+# 换成群活动后语义才对："用户在等"取决于群里人还在不在，不取决于挂死的进程有没有
+# 动静。步骤 0 已经在算群最近活动（同为 30 分钟窗口），这里复用同一口径。
 SUB_RUN_FAILED_ACTIVE_MS = 30 * 60 * 1000
 
 # 阈值可由配置覆盖的门名（供"仅调试阈值触发"标注使用）
@@ -2145,11 +2280,13 @@ def check_sub_run_failed(human, group_id, sessions, cfg, now_ms, as_of_ms=None):
     """功能 23：基础 Agent 执行失败后宽限期内无人接手 → ALERT_SUB_RUN_FAILED。
 
     判据（对每个 group-virtual 基础 Agent 会话）：
-      1. 会话在"用户在等"的语境里：activityTs 距 now 不超过宽限期。
+      1. **这个群**在"用户还在等"的语境里：群最近活动距 now 不超过
+         SUB_RUN_FAILED_ACTIVE_MS。问群而不问失败的那个会话自己——失败会话的
+         activityTs 永久冻结在失败那一刻，拿它当活跃判据会把挂得越久的越确定地
+         滤掉（2026-09-02 群 10233415382 实测漏报 163 分钟，详见该常量注释）。
          ⚠️ 回放（as_of_ms 不为 None）时跳过本条件 —— sessions.json 只有最终快照，
          activityTs 是"现在"的值，对历史时刻不可信（和信号 1/3 同样的保真度限制）。
-         生产实时跑时它是准的、且是主要降噪手段；回放时少这一道，误报由"宽限 +
-         无新 run"两道兜住，验收以生产实测为准。
+         生产实时跑时它是准的；回放时少这一道，误报由"宽限 + 无新 run"两道兜住。
       2. trajectory 最新（不晚于 as_of）的 run 边界是 session.ended 且 status=error
       3. 失败已超过宽限期（同会话此后没有新的 started —— lite 版在 as_of 之前
          找不到 started 就说明没被重试救回）
@@ -2160,14 +2297,15 @@ def check_sub_run_failed(human, group_id, sessions, cfg, now_ms, as_of_ms=None):
     """
     names = human.get("agentNames") or {}
     grace = threshold(cfg, "SUB_RUN_FAILED_GRACE_MS")
+    # 条件 1 的活跃判据：整个群最近有没有动静（≠ 失败会话自己有没有动静）
+    if as_of_ms is None:
+        group_active = max((s.get("activityTs") or 0 for s in sessions), default=0)
+        if not group_active or now_ms - group_active > SUB_RUN_FAILED_ACTIVE_MS:
+            return None                   # 群都凉了，没人在等这单
     hits = []
     for s in sessions:
         if s.get("role") != "基础Agent" or "group-virtual" not in (s.get("sessionKey") or ""):
             continue
-        if as_of_ms is None:
-            activity = s.get("activityTs") or 0
-            if not activity or now_ms - activity > grace:
-                continue                  # 太久没动静，不在"用户在等"的语境里
         traj = resolve_trajectory_file(s["sessionFile"])
         outcome = latest_run_outcome_lite(traj, as_of_ms=as_of_ms or now_ms)
         if not outcome or outcome["marker"] != "session.ended":
@@ -2451,6 +2589,10 @@ def handle_events(human, group_id, sessions, events, cfg, notified, now_ms=None)
         prefix = "dryRun" if dry_run else "实发"
         if debug_note:
             lines.append(("acted", f"{tag} → {debug_note}"))
+        # 话术留档。记的是 sent_event —— 带上"［仅调试阈值触发］"那行，
+        # 和群里真正出现的文字逐字一致，否则事后对账会差那一行。
+        log_message_sent("群消息", sent_event, human,
+                         f"{prefix}{'成功' if ok else '失败'}：{note}", dry_run)
         if ok:
             notified.record(event, now_ms, cfg)
             lines.append(("acted", f"{tag} → {prefix}成功：{note}（耗时 {send_ms / 1000:.1f}s）"))
@@ -2488,6 +2630,9 @@ def handle_events(human, group_id, sessions, events, cfg, notified, now_ms=None)
         label = {"delivered": "唤起已送达", "failed": "唤起失败",
                  "unconfirmed": "唤起未确认"}[status]
         lines.append(("acted", f"{tag} → {label}：{wake_note}"))
+        # 唤起话术也留档。unconfirmed 的照记：话已经递出去了，只是还没拿到送达证据，
+        # 最终结果由后续轮次的补报进日志（这里不等，等会拖住整轮巡检）。
+        log_message_sent("唤起数字人", event, human, f"{label}：{wake_note}", dry_run)
     return lines
 
 
@@ -3199,11 +3344,24 @@ def main():
 
     cfg = load_config(args.config)
     log_file, log_max, log_keep = apply_log_settings(cfg)
+    # 先把目录建出来再清理：日志目录第一次用时还不存在，直接清理会打两行
+    # FileNotFoundError 唬人（其实什么都不用清）。
+    for _dir in {os.path.dirname(p) for p in (log_file, _messages_log_file) if p}:
+        try:
+            os.makedirs(_dir, exist_ok=True)
+        except OSError as e:
+            print(f"[建日志目录失败] {_dir}：{e!r}", flush=True)
     if log_file:
         dropped = cleanup_rotated(log_file, log_keep) + cleanup_rotated(ERRORS_PATH, log_keep)
-        log(f"日志落盘 {log_file}，单文件上限 {log_max / 1024 / 1024:.0f}MB，"
-            f"保留 {log_keep} 份历史"
+        dropped += cleanup_dated(log_file, _log_keep_days)
+        log(f"日志落盘 {dated_path(log_file)}（按天分文件，留 {_log_keep_days} 天），"
+            f"单文件上限 {log_max / 1024 / 1024:.0f}MB，保留 {log_keep} 份历史"
             + (f"（启动时清掉 {dropped} 份超额历史）" if dropped else ""))
+    if _messages_log_file:
+        dropped = cleanup_dated(_messages_log_file, _log_keep_days)
+        log(f"话术日志 {dated_path(_messages_log_file)}"
+            f"（只记真发出去的群消息与唤起话术）"
+            + (f"，启动时清掉 {dropped} 份超期历史" if dropped else ""))
 
     if args.errors:
         print_errors()
