@@ -326,6 +326,11 @@ def inspect_once(cfg, round_no):
     # 先把上几轮放后台的唤起的最终结果补报出来，别让日志停在"未确认"
     acted.extend(line for _, line in report_pending_wakes())
     for human in delivery:
+        if not da_allowed(cfg, human["daId"]):
+            # 数字人级灰度：不在 das.include 名单里，它的群一个都不看
+            log(f"数字人 {human['daId']} 不在数字人白名单（das.include），本轮跳过")
+            skipped += len(human["groups"])
+            continue
         for group_id, sessions in sorted(human["groups"].items()):
             if not group_allowed(cfg, group_id):
                 skipped += 1
@@ -848,12 +853,20 @@ def judge_running(sessions, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMIT, cc=
     subs = [s for s in sessions if s["role"] != "数字人"]
 
     # 信号 1：数字人主状态
+    da_started_at = (da or {}).get("startedAt") or 0
+    # 快照声明的 running 的"佐证时刻"：状态字段之外，updatedAt/lastActivityAt/
+    # lastActivity 的最新值。若它晚于 trajectory 的 ended，说明 ended 之后快照
+    # 还有动静（新 run 起了或在跑），running 可信；否则 running 是残留。
+    da_touch_at = max((da or {}).get(f) or 0
+                      for f in ("updatedAt", "lastActivityAt", "lastInteractionAt"))
     if da is None:
         evidence.append("信号1 数字人主状态：这个群里没有数字人本体会话")
     else:
         if da["status"] == "running":
             hits.append("信号1 数字人 status=running")
-        evidence.append(f"信号1 数字人主状态：status={da['status']}")
+        evidence.append(f"信号1 数字人主状态：status={da['status']}"
+                        f"（sessionStartedAt={fmt_ts(da_started_at)}"
+                        f" 最近触碰={fmt_ts(da_touch_at)}）")
 
     # 信号 2：数字人 trajectory 的 run 标记
     if da is None:
@@ -901,7 +914,33 @@ def judge_running(sessions, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMIT, cc=
         evidence.append(f"信号4 CC：空闲，最后触碰 {fmt_ts(cc.get('lastTouch'))}")
 
     if hits:
-        state = STATE_RUNNING
+        # 信号 1（快照 running）与信号 2（trajectory 最新是 ended）冲突时仲裁：
+        # 快照的 status 是**当前状态字段**，run 结束后可能忘翻回来（被 kill/崩溃/
+        # 长流程后未刷新）；trajectory 是 append-only 的事件日志，ended 落盘后不可
+        # 磨灭。工厂数据实测（2026-09-01 群 10233385924）：ended 之后快照仍 running
+        # 且没有任何新触碰 —— 快照是残留，整个 idle 分支（含功能 23）被它压住。
+        #
+        # 仲裁规则：ended 之后快照**还有没有触碰**（updatedAt/lastActivityAt/
+        # lastInteractionAt 任一晚于 ended）。
+        #   没有 → running 无佐证，是残留，判 idle；
+        #   有   → ended 之后快照还有动静（新 run 起了或在跑），正常推进，running。
+        # 不能用 startedAt 做这个比较：背靠背 run 之间它更新滞后（15:34 的值跨过
+        # 15:37、15:39 两轮 ended），拿它判残留会把回放里所有 running 全误杀。
+        #
+        # 两个错方向的代价不对称：误判 idle 会给活会话发中断告警，误判 running 只
+        # 晚一轮。所以触碰时刻取不到时保守维持 running。
+        # 仲裁只在生产实时（as_of_ms 为 None）生效：回放时快照字段是"未来数据"
+        # （最终快照的触碰时刻几乎必然晚于历史 ended），仲裁会把回放的 running
+        # 全部误杀 —— verify 的 21 条回放断言就是这么挂的。
+        if (as_of_ms is None and traj_marker == "session.ended" and traj_ts
+                and da_touch_at and da_touch_at < traj_ts):
+            evidence.append(
+                f"仲裁：trajectory ended({fmt_ts(traj_ts)}) 之后快照再无触碰"
+                f"（最近触碰 {fmt_ts(da_touch_at)}）→ status=running 是残留，判 idle"
+            )
+            state = STATE_IDLE
+        else:
+            state = STATE_RUNNING
     elif traj_conclusive:
         state = STATE_IDLE
     else:
@@ -927,6 +966,8 @@ def print_discovery(cfg=None):
         if not h["hasOwnSessions"]:
             flags.append("本体未运行过")
         print(f"\n数字人 {h['daId']}　[{' | '.join(flags)}]")
+        if not da_allowed(cfg, h["daId"]):
+            print("  ⏭️ 数字人白名单外（das.include），不巡检")
         print(f"  目录 {h['instDir']}")
         print(f"  发送脚本 {h['sendScript'] or '❌ 找不到（这个数字人发不出消息）'}")
         if not h["groups"]:
@@ -1697,6 +1738,16 @@ def group_allowed(cfg, group_id):
     """白名单过滤。groups.include 为空表示不限制。"""
     include = ((cfg or {}).get("groups") or {}).get("include") or []
     return not include or str(group_id) in [str(g) for g in include]
+
+
+def da_allowed(cfg, da_id):
+    """数字人白名单过滤。das.include 为空表示不限制。
+
+    灰度两级都要过：数字人白名单圈定"巡检谁"，群白名单圈定"巡检哪些群"。
+    语义与群白名单一致 —— 空数组 = 全量，填了只巡名单内的。
+    """
+    include = ((cfg or {}).get("das") or {}).get("include") or []
+    return not include or str(da_id) in [str(g) for g in include]
 
 
 def parse_quiet_hours(spec):
