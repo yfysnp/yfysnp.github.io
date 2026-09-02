@@ -79,9 +79,12 @@ DEFAULT_CONFIG = {
 def log(msg):
     """带时间戳打一行日志到 stdout；配了 log.file 就同时落盘（带轮转）。
 
+    时间戳带完整日期：巡检器是常驻进程、部署在服务器上长期运行，日志跨天甚至跨年，
+    只打时分秒时排查跨天问题（"这条 16:06 的告警是今天还是昨天的"）对不上，
+    轮转后的历史文件（inspector.log.1/.2/…）更是没法定位到哪天。
     落盘失败只提示一次性的错，不抛 —— 日志写不进去也不该让巡检停摆。
     """
-    ts = datetime.now().strftime("%H:%M:%S")
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
     print(line, flush=True)
     if not _log_file:
