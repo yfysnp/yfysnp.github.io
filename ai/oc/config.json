@@ -3,7 +3,7 @@
   "enabled": true,
   "interval": 30000,
   "_dryRun说明": "true 时仍然调真实发送脚本但带 --dry-run，走完整链路只是不投递。灰度期保持 true。",
-  "dryRun": true,
+  "dryRun": false,
   "_groups说明": "include 为空数组 = 巡检全部群；填了群号就只巡检名单内的群。灰度先放一个群。",
   "groups": {
     "include": []
@@ -49,6 +49,6 @@
   },
   "_wake说明": "唤起数字人：5 类 ALERT 发完群消息后会让数字人跑一轮继续处理。副作用比发消息重一个量级，方案 §6.3 要求 M4 前默认 false。dryRun=true 时只打印命令、绝不执行（openclaw agent 没有 dry-run 开关）。",
   "wake": {
-    "enabled": false
+    "enabled": true
   }
 }
