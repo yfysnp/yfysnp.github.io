@@ -1566,6 +1566,15 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
             trace.append(f"→ 命中 {event['type']}：{event['detail']['subs']}")
             return [event], trace
 
+        # 功能 23：基础 Agent 执行失败无人接手（full-auto 派活在数字人消息流里
+        # 不可见，铁律一看不到，只能从基础 Agent 自己的 trajectory 判）
+        event = check_sub_run_failed(human, group_id, sessions, cfg, now_ms,
+                                     as_of_ms=as_of_ms)
+        if event:
+            trace.append(f"→ 命中 {event['type']}：sub={event['detail']['sub']} "
+                         f"failedAt={fmt_ts(event['detail']['failedAt'])}")
+            return [event], trace
+
         event = check_user_not_replied(human, group_id, sessions, cfg, now_ms, transcript)
         if event:
             trace.append(f"→ 命中 {event['type']}（形态 {event['detail']['form']}）")
@@ -1678,6 +1687,9 @@ def event_signature(event):
         # 但 runId 更直接，而且同一 run 里 model.completed 和 session.ended 都可能
         # 带异常标志，用时间戳会把同一件事算成两件。
         return f"{detail.get('runId', '')}:{detail.get('reason', '')}"
+    if event["type"] == "ALERT_SUB_RUN_FAILED":
+        # 按"哪个 sub + 哪次失败"去重：同一次失败只告一次，重跑后又失败是新一件事
+        return f"{detail.get('sub', '')}:{detail.get('failedAt', 0)}"
     return str(detail.get("quietSince", ""))
 
 
@@ -1996,19 +2008,160 @@ def still_relevant(human, group_id, sessions, event, cfg, now_ms):
 # 也就是巡检器跟自己对话、越告警越有话说。
 WAKE_MESSAGE_PREFIX = "[巡检器]"
 
-# 哪些事件要唤起（方案 §5.1：5 类 ALERT 全部唤起，REMIND 不唤起）。
+# 哪些事件要唤起（方案 §5.1：5 类 ALERT 全部唤起，REMIND 不唤起。
+# ALERT_SUB_RUN_FAILED 是功能 23 新增的第 6 类，同为 ALERT 同样唤起）。
 WAKE_EVENT_TYPES = (
     "ALERT_MODEL_ERROR",
     "ALERT_CC_STALLED",
     "ALERT_SUB_NOT_REPORTED",
     "ALERT_USER_NOT_REPLIED",
     "ALERT_DA_NOT_REPLIED_AFTER_SUB",
+    "ALERT_SUB_RUN_FAILED",
 )
 
 # 唤起后最多等多久拿"真送到了"的证据。到点还没证据就如实说"未确认"，不谎报成功。
 WAKE_PROBE_SECONDS = 8
 # 等证据时的轮询间隔
 WAKE_POLL_SECONDS = 0.5
+
+# ---------------- 功能 23：基础 Agent 执行失败无人接手 ALERT_SUB_RUN_FAILED ----------------
+#
+# 起因（2026-08-31 群 10233285807 线上复盘）：数字人 22:01:26 走 fe-deliver-full-auto
+# 路线派活给马良（task-*.json 任务文件 + workflow runner 投递），马良 run 22:11:26
+# 超时失败（timedOutByRunBudget），之后静默 12 小时，用户次日上午来问才发现。
+# 既有 ALERT_SUB_NOT_REPORTED 对此**完全失明**：它的派活/回报记录取自数字人消息流
+# 里的 sessions_send 调用，而 full-auto 派活不经过数字人消息流 —— 从源头就看不到
+# 这单活。但证据明明白白躺在**马良自己的 trajectory** 里：session.ended status=error。
+#
+# 误报是最大风险：实测（2026-08-29~09-01 四个基础 Agent）失败 run 有 18 个，其中
+# 大部分在 30 分钟内被 openclaw 自动重试救回（新 session.started），用户无感。
+# 所以判据必须叠"30 分钟宽限内无人接手"（实测能把 18 压到 3），再叠"最近活跃过"
+# （挂死的任务必然最近还在跑；几天前的老会话静默着不碍事）。
+
+# 失败后等这么久还没新 run 才算"无人接手"。依据上面实测：18 个失败里 15 个在
+# 30 分钟内自动恢复，3 个未恢复的全是真挂起或长时中断。
+SUB_RUN_FAILED_GRACE_MS = 30 * 60 * 1000
+
+# 只考虑这么久内活跃过的基础 Agent 会话（activityTs 距今）。远超这个静默的老会话
+# 即使最后一步是失败，也早已超出"用户在等"的语境。
+SUB_RUN_FAILED_ACTIVE_MS = 30 * 60 * 1000
+
+# 阈值可由配置覆盖的门名（供"仅调试阈值触发"标注使用）
+THRESHOLD_DEFAULTS["SUB_RUN_FAILED_GRACE_MS"] = SUB_RUN_FAILED_GRACE_MS
+
+
+def latest_run_outcome_lite(traj_file, as_of_ms=None, scan_bytes=8 * 1024 * 1024):
+    """只读 trajectory 尾部，返回最新 run 边界的 {marker,ts,status,promptError}。
+
+    与 latest_run_outcome 的区别：只为新检测服务，每轮要对多个基础 Agent 会话各扫
+    一次，必须便宜。但**不能用小窗口**：实测（2026-08-31 群 10233285807）长会话尾部
+    全是 150KB 级的正文事件，256KB 窗口一行标记都盖不住。好在标记行本身只有几百
+    字节 —— 逐块读、**只对含标记字样的行做解析**，遇到第一个标记就停。正常读一两块
+    （128KB）就命中，最坏情况（尾部全是大正文）也只读 8MB 上限。
+
+    as_of_ms 用于离线复盘：忽略该时刻之后的标记。不带时看真正的"最新"。
+    注意回放保真度：sessions.json 的 status/activityTs 是最终快照，回放时不可信
+    （信号 1/3 同样的问题）；但 trajectory 里的 run 边界是历史 append 的，带 as_of
+    过滤后是可信的。
+    """
+    if not traj_file or not os.path.exists(traj_file):
+        return None
+    last = None
+    try:
+        for raw, _ in iter_lines_reverse(traj_file, max_bytes=scan_bytes):
+            if b"session.started" not in raw and b"session.ended" not in raw:
+                continue          # 绝大多数行在这里就被跳过，不付 JSON 解析的钱
+            o = json_object(raw.decode("utf-8", errors="replace"))
+            if not o or o.get("type") not in RUN_MARKERS:
+                continue
+            ts = iso_to_ms(o.get("ts"))
+            if as_of_ms is not None and ts > as_of_ms:
+                continue          # 回放：忽略"未来"的标记，继续往前找
+            data = o.get("data") or {}
+            last = {
+                "marker": o["type"],
+                "ts": ts,
+                "status": str(data.get("status") or ""),
+                "promptError": str(data.get("promptError") or ""),
+            }
+            break        # 倒序第一个（不晚于 as_of）的就是该时刻的最新
+    except OSError:
+        return None
+    return last
+
+
+def check_sub_run_failed(human, group_id, sessions, cfg, now_ms, as_of_ms=None):
+    """功能 23：基础 Agent 执行失败后宽限期内无人接手 → ALERT_SUB_RUN_FAILED。
+
+    判据（对每个 group-virtual 基础 Agent 会话）：
+      1. 会话在"用户在等"的语境里：activityTs 距 now 不超过宽限期。
+         ⚠️ 回放（as_of_ms 不为 None）时跳过本条件 —— sessions.json 只有最终快照，
+         activityTs 是"现在"的值，对历史时刻不可信（和信号 1/3 同样的保真度限制）。
+         生产实时跑时它是准的、且是主要降噪手段；回放时少这一道，误报由"宽限 +
+         无新 run"两道兜住，验收以生产实测为准。
+      2. trajectory 最新（不晚于 as_of）的 run 边界是 session.ended 且 status=error
+      3. 失败已超过宽限期（同会话此后没有新的 started —— lite 版在 as_of 之前
+         找不到 started 就说明没被重试救回）
+
+    顺序在铁律一之后：数字人视角能看到的先走老路，这里只兜 full-auto 这类
+    数字人消息流里看不见的派活。
+    返回命中的第一个（按失败时间最新优先）。
+    """
+    names = human.get("agentNames") or {}
+    grace = threshold(cfg, "SUB_RUN_FAILED_GRACE_MS")
+    hits = []
+    for s in sessions:
+        if s.get("role") != "基础Agent" or "group-virtual" not in (s.get("sessionKey") or ""):
+            continue
+        if as_of_ms is None:
+            activity = s.get("activityTs") or 0
+            if not activity or now_ms - activity > grace:
+                continue                  # 太久没动静，不在"用户在等"的语境里
+        traj = resolve_trajectory_file(s["sessionFile"])
+        outcome = latest_run_outcome_lite(traj, as_of_ms=as_of_ms or now_ms)
+        if not outcome or outcome["marker"] != "session.ended":
+            continue                      # 在跑（started）或没有 run 记录
+        if outcome["status"] != "error":
+            continue
+        failed_at = outcome["ts"]
+        if not failed_at or now_ms - failed_at <= grace:
+            continue                      # 还在宽限期内，可能马上被重试救回
+        agent_id = s.get("agentId") or "?"
+        hits.append({
+            "agentId": agent_id,
+            "failedAt": failed_at,
+            "waitedMs": now_ms - failed_at,
+            "reason": outcome["promptError"] or "未知原因",
+            "sessionKey": s.get("sessionKey"),
+        })
+    if not hits:
+        return None
+    hits.sort(key=lambda h: -h["failedAt"])
+    h = hits[0]
+    agent_name = names.get(h["agentId"], h["agentId"])
+    da_name = names.get(human["daId"], human["daId"])
+    return {
+        "type": "ALERT_SUB_RUN_FAILED",
+        "severity": "ALERT",
+        "daId": human["daId"],
+        "groupId": group_id,
+        "sessionKey": h["sessionKey"],
+        "channel": next((s.get("channel") for s in sessions if s.get("role") == "数字人"), ""),
+        "target": next((s.get("target") for s in sessions if s.get("role") == "数字人"), ""),
+        "text": (f"⚠️ {da_name} 派给 {agent_name} 的执行在 "
+                 f"{fmt_ts(h['failedAt'])}异常中断（{h['reason'][:80]}），"
+                 f"已 {fmt_duration(h['waitedMs'])}无恢复，任务可能挂起。"
+                 f"\n　　{recovery_hint(cfg)}"),
+        "detail": {
+            "gate": {"key": "SUB_RUN_FAILED_GRACE_MS", "measured": h["waitedMs"]},
+            "sub": h["agentId"],
+            "failedAt": h["failedAt"],
+            "reason": h["reason"],
+            "waitedMs": h["waitedMs"],
+        },
+    }
+
+
 
 # 还没拿到结论的唤起。放后台的那些必须在后续轮次里把真实结果补报出来，
 # 否则日志永远停在"未确认"，等于没记。
@@ -2108,6 +2261,9 @@ def wake_message_for(event):
             "用户的消息似乎没有得到回复，请检查并回复用户",
         "ALERT_DA_NOT_REPLIED_AFTER_SUB":
             f"已收到 {detail.get('sub', '基础 Agent')} 的结果但没有转达给用户，请转达",
+        "ALERT_SUB_RUN_FAILED":
+            f"{detail.get('sub', '基础 Agent')} 的执行异常中断且未恢复，"
+            f"请检查任务状态并补处理",
     }.get(event["type"], "检测到异常，请检查当前会话状态")
     return f"{WAKE_MESSAGE_PREFIX} {reason}。"
 
