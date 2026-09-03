@@ -448,6 +448,7 @@ def inspect_once(cfg, round_no):
     notified = NotifiedStore()
     scanned = skipped = failed = 0
     acted, suppressed = [], []
+    blocked_ids = []
     # 先把上几轮放后台的唤起的最终结果补报出来，别让日志停在"未确认"
     acted.extend(line for _, line in report_pending_wakes())
     for human in delivery:
@@ -458,6 +459,10 @@ def inspect_once(cfg, round_no):
             continue
         for group_id, sessions in sorted(human["groups"].items()):
             if not group_allowed(cfg, group_id):
+                # 屏蔽是人为按下的开关，得让它一直看得见 —— 否则过几天就忘了
+                # 某个群还被按着，"怎么这个群从来不报"要查很久。
+                if group_blocked(cfg, group_id):
+                    blocked_ids.append(group_id)
                 skipped += 1
                 continue
             scanned += 1
@@ -476,6 +481,7 @@ def inspect_once(cfg, round_no):
     mode = "dryRun" if (cfg or {}).get("dryRun", True) else "实发"
     log(f"第 {round_no} 轮［{mode}］：交付数字人 {len(delivery)} 个 / 巡检群 {scanned} 个"
         f"（白名单外跳过 {skipped} 个"
+        f"{f'，其中屏蔽 {len(blocked_ids)} 个：' + '、'.join(blocked_ids) if blocked_ids else ''}"
         f"{f'，出错 {failed} 个' if failed else ''}）"
         f"→ 动作 {len(acted)} 条"
         f"{f'，被降噪拦下 {len(suppressed)} 条' if suppressed else ''}")
@@ -1100,7 +1106,10 @@ def print_discovery(cfg=None):
             continue
         for group_id, sessions in sorted(h["groups"].items()):
             allowed = group_allowed(cfg, group_id)
-            gate = "" if allowed else "　⏭️ 白名单外，不巡检"
+            if group_blocked(cfg, group_id):
+                gate = "　🚫 已屏蔽（groups.exclude），不巡检"
+            else:
+                gate = "" if allowed else "　⏭️ 白名单外，不巡检"
             print(f"  群 {group_id}　{len(sessions)} 个会话{gate}")
             if not allowed:
                 continue
@@ -1860,9 +1869,34 @@ def event_signature(event):
 
 
 def group_allowed(cfg, group_id):
-    """白名单过滤。groups.include 为空表示不限制。"""
-    include = ((cfg or {}).get("groups") or {}).get("include") or []
+    """群过滤。返回 True 表示这个群要巡检。
+
+    两个名单，**黑名单优先于白名单**：
+      groups.exclude —— 黑名单，列进来的群一律不巡（即使白名单里也有它）。
+        用途是临时屏蔽：某个群在反复误报、或者出了暂时解决不了的问题，
+        先把它按住，不必为了一个群把整个巡检器停掉。
+      groups.include —— 白名单，非空时只巡名单内的群；空数组 = 不限制。
+
+    黑名单优先的理由：屏蔽是"我明确知道这个群现在不要碰"的强意图，而白名单
+    往往是灰度时圈的一片范围。两者撞车时按强意图走，才不会出现"我明明屏蔽了
+    它却还在发消息"这种最让人恼火的情况。
+    """
+    section = (cfg or {}).get("groups") or {}
+    exclude = section.get("exclude") or []
+    if str(group_id) in [str(g) for g in exclude]:
+        return False
+    include = section.get("include") or []
     return not include or str(group_id) in [str(g) for g in include]
+
+
+def group_blocked(cfg, group_id):
+    """这个群是不是被黑名单显式屏蔽的（区别于"不在白名单里"）。
+
+    单独一个函数是为了让日志能说清跳过的原因：临时屏蔽是人为按下的开关，
+    需要每轮看见它还按着；"不在灰度白名单里"是常态，不值得刷屏。
+    """
+    exclude = ((cfg or {}).get("groups") or {}).get("exclude") or []
+    return str(group_id) in [str(g) for g in exclude]
 
 
 def da_allowed(cfg, da_id):
