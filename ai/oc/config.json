@@ -18,7 +18,7 @@
   "thresholds": {
     "_ACTIVE_WINDOW_MS": "步骤0：这么久没活动就当僵尸群不巡检",
     "ACTIVE_WINDOW_MS": 1800000,
-    "_USER_QUIET_MS": "步骤F：对客静默这么久才提醒进行中",
+    "_USER_QUIET_MS": "步骤F：距上一次「有进展」这么久没动静才提醒进行中。进展锚点 = max(用户发言, 数字人对客, 基础 Agent 回报)——数字人对客一次、或任一基础 Agent 回报一次，这个计时就归零重算。文案里那个「自上次进展已等待 X」用的是同一个锚点，闸门量的和用户看到的是同一个数",
     "USER_QUIET_MS": 300000,
     "_COOLDOWN_MS": "同一会话同一类事件的冷却。实测证明必需：只靠 signature 去重时，数字人每播报一次进度 signature 就变，6 分钟的任务发了 4 条提醒",
     "COOLDOWN_MS": 1800000,
@@ -29,7 +29,7 @@
     "_GROUP_RATE_MAX": "同一个群在窗口内最多发几条（REMIND+ALERT 合计）。这是唯一一道防「往群里灌消息」的闸门，生产值 3；调试期调大（如 60）等于关掉它，切生产前务必改回来",
     "GROUP_RATE_MAX": 3,
     "_新增说明": "以下阈值均由实测分布推导，不是照抄方案；改动前先看 inspector.py 里 THRESHOLD_DEFAULTS 对应注释",
-    "_SUB_REPORT_LAG_MS": "派活后基础 Agent 还在 running 时，多久没回报才告警（兜底宽限）。实测 64 次派活：中位 15 秒、P90 80 秒、最大 333 秒——方案给的 90 秒会对 11% 正常派活误报，所以放到 10 分钟",
+    "_SUB_REPORT_LAG_MS": "派活后基础 Agent 还在 running 时，多久没回报才告警（兜底宽限）。实测 64 次派活：中位 15 秒、P90 80 秒、最大 333 秒——方案给的 90 秒会对 11% 正常派活误报，所以放到 10 分钟。注意这道闸门量的是「now − 派活时刻」，而文案里那个数字量的是「now − 该 sub 上次回报」（和 REMIND 同一个进展口径），两者故意不同，detail 里 gate.measured / sinceLastReportMs 分别记",
     "SUB_REPORT_LAG_MS": 600000,
     "_SUB_DONE_LAG_MS": "基础 Agent 已不在 running（跑完了却没回报）时的宽限。已经停了还不回报，等 90 秒就够",
     "SUB_DONE_LAG_MS": 90000,

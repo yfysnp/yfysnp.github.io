@@ -1380,8 +1380,9 @@ def scan_transcript(session_file, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMI
       tDaSendOk  严格证据：send-user-message.py 且脚本回报已投递（三条铁律要用）
       tDaText    最后一条非 NO_REPLY 家族的 assistant 文本
       tDaReply   两者取晚 —— 静默判定用这个
+      tSubReport recvFrom 里最晚的一条 —— 基础 Agent 最近一次回报，进展锚点要用
     """
-    out = {"tUser": 0, "tDaSendOk": 0, "tDaText": 0, "tDaReply": 0,
+    out = {"tUser": 0, "tDaSendOk": 0, "tDaText": 0, "tDaReply": 0, "tSubReport": 0,
            "tModelError": 0, "modelErrorMessage": "", "modelChain": [],
            "tDispatch": 0, "lastNoReply": False, "tNoReplyMark": 0, "tWake": 0,
            "tRuntime": 0,
@@ -1508,7 +1509,34 @@ def scan_transcript(session_file, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMI
     except OSError:
         pass
     out["tDaReply"] = max(out["tDaSendOk"], out["tDaText"])
+    # 各基础 Agent 最近一次回报里最晚的那个。recvFrom 是倒扫时"第一次遇到就记下"，
+    # 所以每个 value 本身已经是该 sub 的最近一次，取 max 即全群最近一次回报。
+    # 单独物化成字段是给"进展锚点"用的（见 progress_anchor）：回报是实质进展，
+    # 但它既不是用户发言也不是对客，原来两个锚点都盖不住它。
+    out["tSubReport"] = max((out["recvFrom"] or {}).values(), default=0)
     return out
+
+
+def progress_anchor(transcript):
+    """最近一次"有实质进展"的时刻 = max(用户发言, 数字人对客, 基础 Agent 回报)。
+
+    三类信号都算进展，因为对用户来说"事情有没有在动"就是这三件事之一发生了：
+      tUser       用户又说话了 —— 新一轮交互开始
+      tDaReply    数字人对客 —— 直接可见的推进
+      tSubReport  基础 Agent 回报 —— 交付流程里最密集的进展信号
+
+    为什么要把 tSubReport 也算进来（2026-09-04 按线上诉求改）：派活密集的交付流程里
+    数字人常常连着几轮只对内派活/收回报、不对客（收尾是 NO_REPLY 家族，实测 8 次回报
+    里 5 次如此），tDaReply 压根不动。只按前两个锚点算，文案会说"已等待 40 分钟"，
+    而这 40 分钟里基础 Agent 回报了七八次 —— 用户看到的数字和真实进度脱节。
+
+    ⚠️ 代价（已确认接受）：基础 Agent 频繁回报、但数字人一直不转达给用户时，
+    REMIND 会被这个锚点压住。这个形态由铁律二-2（ALERT_DA_NOT_REPLIED_AFTER_SUB）
+    专门兜着，而且它是 ALERT 级、比 REMIND 更该报，所以不会漏。
+    """
+    return max(transcript.get("tUser") or 0,
+               transcript.get("tDaReply") or 0,
+               transcript.get("tSubReport") or 0)
 
 
 # 工具名 → 人话，用于"正在干啥"文案。
@@ -1621,10 +1649,15 @@ def fmt_duration(ms):
 
 def check_long_running(human, group_id, sessions, cfg, now_ms, latest_event, transcript,
                        run_started_ts):
-    """步骤 F：在跑但对客静默太久 → REMIND_LONG_RUNNING。
+    """步骤 F：在跑但迟迟没有进展 → REMIND_LONG_RUNNING。
 
-    静默从"最后一次跟用户有来往"算起，取 T_user 和 T_da_send_ok 里更晚的那个：
-    数字人中途播报过进度，就不该再提醒。
+    从"最后一次有实质进展"算起 —— progress_anchor()，即
+    max(用户发言, 数字人对客, 基础 Agent 回报)。数字人中途播报过进度、或者某个
+    基础 Agent 刚回报过，都不该再提醒。
+
+    判定和文案用**同一个**锚点（2026-09-04 统一）。此前判定用 max(tUser, tDaReply)、
+    文案却只从 tUser 算，是两把尺子：会出现"触发条件说静默 6 分钟、文案说已等待
+    3 小时"这种对不上的组合。
 
     run_started_ts 由调用方给出"当前这次 run 的开始时间"，优先 trajectory 的
     session.started，拿不到时回落 sessions.json 的 startedAt（见 decide 里的注释）。
@@ -1633,9 +1666,9 @@ def check_long_running(human, group_id, sessions, cfg, now_ms, latest_event, tra
     da = next((s for s in sessions if s["role"] == "数字人"), None)
     if da is None:
         return None
-    quiet_since = max(transcript["tUser"], transcript["tDaReply"])
+    quiet_since = progress_anchor(transcript)
     if not quiet_since:
-        return None      # 连一次来往都没有，没有基准，不提醒
+        return None      # 连一次进展都没有，没有基准，不提醒
 
     # 球在用户脚下：最后一次对客是澄清/确认类，且发生在用户最后一次发言之后，
     # 说明问题已经抛给用户、正在等他回答。这时候提醒"我正在处理中"是噪音。
@@ -1652,14 +1685,20 @@ def check_long_running(human, group_id, sessions, cfg, now_ms, latest_event, tra
                               human.get("agentNames") or {})
     da_name = (human.get("agentNames") or {}).get(human["daId"], human["daId"])
 
-    # 文案里的时长说的是"你这个请求等了多久"，而不是"当前这个 run 跑了多久"。
-    # 实测（2026-08-22 15:43 群 10232962603）派活场景下数字人在"派活→等回报→被唤醒
-    # →再派活"的循环里起一连串短 run，sessions.json.startedAt 每次都被重置，按 run
-    # 算出来是"已运行 0 秒"，对用户毫无意义。用户关心的是自己等了多久，所以从最后
-    # 一次用户发言算起。run 时长留在 detail 里供排查。
-    waited_ms = now_ms - transcript["tUser"] if transcript["tUser"] else 0
+    # 文案里的时长说的是"距上一次有进展过去了多久"，不是"当前这个 run 跑了多久"，
+    # 也不再是"用户等了多久"。
+    #
+    # 不能按 run 算：实测（2026-08-22 15:43 群 10232962603）派活场景下数字人在
+    # "派活→等回报→被唤醒→再派活"的循环里起一连串短 run，sessions.json.startedAt
+    # 每次都被重置，按 run 算出来是"已运行 0 秒"，对用户毫无意义。
+    #
+    # 也不再只按 tUser 算（2026-09-04 改）：那个数字只会单调增长，用户看不出
+    # "进展还在不在更新"。换成进展锚点后，数字人每对客一次、基础 Agent 每回报一次，
+    # 这个数字就归零重算 —— 用户看到它小就是在动、看到它一直涨就是真卡住了。
+    # run 时长留在 detail 里供排查。
+    waited_ms = now_ms - quiet_since       # 和触发判据同一个锚点，两者恒等
     ran_ms = now_ms - run_started_ts if run_started_ts and now_ms > run_started_ts else 0
-    waited_text = f"，已等待 {fmt_duration(waited_ms)}" if waited_ms > 0 else ""
+    waited_text = f"，自上次进展已等待 {fmt_duration(waited_ms)}" if waited_ms > 0 else ""
     return {
         "type": "REMIND_LONG_RUNNING",
         "severity": "INFO",
@@ -1681,8 +1720,12 @@ def check_long_running(human, group_id, sessions, cfg, now_ms, latest_event, tra
             "tDaSendOk": transcript["tDaSendOk"],
             "tDaText": transcript["tDaText"],
             "tDaReply": transcript["tDaReply"],
+            "tSubReport": transcript.get("tSubReport", 0),
             "runStartedTs": run_started_ts,
             "ranMs": ran_ms,
+            # 统一锚点后 waitedMs 和 quietMs 恒等。两个键都留着：quietMs 对应闸门
+            # （gate.measured 要能和它对上），waitedMs 对应文案里那个数字。
+            # 排查时"闸门量的和用户看到的是不是同一个数"要一眼可验。
             "waitedMs": waited_ms,
             "doing": doing,
         },
@@ -1899,16 +1942,20 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
     event = check_long_running(human, group_id, sessions, cfg, now_ms, latest_event,
                                transcript, run_started_ts)
     if event is None:
-        quiet_since = max(transcript["tUser"], transcript["tDaReply"])
+        quiet_since = progress_anchor(transcript)
         if quiet_since:
             trace.append(
-                f"步骤F 静默检查：静默 {(now_ms - quiet_since) / 60000:.1f}min"
+                f"步骤F 进展检查：距上次进展 {(now_ms - quiet_since) / 60000:.1f}min"
                 f" ≤ 阈值 {threshold(cfg, 'USER_QUIET_MS') / 60000:.0f}min → 正常运行，不提醒"
+                f"（锚点 T_user={fmt_ts(transcript['tUser'])[:14]}"
+                f" T_da_reply={fmt_ts(transcript['tDaReply'])[:14]}"
+                f" T_sub_report={fmt_ts(transcript.get('tSubReport', 0))[:14]}）"
             )
         else:
-            trace.append("步骤F 静默检查：没有任何对客来往，无基准 → 不提醒")
+            trace.append("步骤F 进展检查：没有任何进展信号，无基准 → 不提醒")
         return [], trace
-    trace.append(f"步骤F 静默检查：静默 {event['detail']['quietMs'] / 60000:.1f}min → 触发提醒")
+    trace.append(f"步骤F 进展检查：距上次进展 {event['detail']['quietMs'] / 60000:.1f}min"
+                 f" → 触发提醒")
     return [event], trace
 
 
@@ -1952,7 +1999,23 @@ NOTIFIED_PATH = os.path.join(STATE_DIR, "notified.json")
 def event_signature(event):
     detail = event.get("detail") or {}
     if event["type"] == "REMIND_LONG_RUNNING":
-        return f"{detail.get('tUser', 0)}:{detail.get('tDaReply', detail.get('tDaSendOk', 0))}"
+        # 三个进展锚点拼起来：任何一个往前走了就是新一轮静默，可以再提醒。
+        #
+        # "一段连续静默只提醒一次"这条 2026-08-22 与用户确认的取舍没有被推翻 ——
+        # 变的是"一段静默"的定义：基础 Agent 回报也是进展，回报之后那一段属于
+        # 新的一段。判定/文案/去重三处必须用同一把尺子，否则会出现"锚点归零了、
+        # 但 signature 没变，于是这一段永远提醒不出来"。
+        #
+        # ⚠️ tSubReport 为 0 时**刻意退回老的两段式格式**，不写成 "a:b:0"。
+        # 落盘的 notified.json 里存的是 signature 字符串，格式一变，升级后所有
+        # 还在静默中的会话都会被判成"新事件"再打扰一次。压在这个分支上：
+        # 从没有基础 Agent 回报过的会话（调试群、纯对话群）签名逐字不变，
+        # 只有真正有回报的会话才多挨一次 —— 代价从"全量"缩到"少数"。
+        anchors = (detail.get('tUser', 0),
+                   detail.get('tDaReply', detail.get('tDaSendOk', 0)))
+        sub_report = detail.get('tSubReport', 0)
+        base = f"{anchors[0]}:{anchors[1]}"
+        return f"{base}:{sub_report}" if sub_report else base
     if event["type"] == "ALERT_SUB_NOT_REPORTED":
         # 按"哪些 sub + 哪次派活"去重：重新派活就是新一件事
         return f"{','.join(detail.get('subs') or [])}:{detail.get('tDispatch', 0)}"
@@ -2320,11 +2383,13 @@ def still_relevant(human, group_id, sessions, event, cfg, now_ms):
         if verdict["state"] != STATE_RUNNING:
             return False, (f"数字人已不在运行中（复查判定 {verdict['state']}："
                            f"{verdict['evidence'][0]}），提醒已过时")
-        # 2) 数字人已经回过话了 → 静默被打破，用户不需要这条提醒
+        # 2) 期间又有进展了 → 静默被打破，用户不需要这条提醒。
+        #    锚点必须和 check_long_running 用同一个 progress_anchor()：判定认基础
+        #    Agent 回报是进展，复查也必须认，否则复查会用更窄的尺子放行已经过时的提醒。
         fresh = scan_transcript(fresh_da["sessionFile"])
-        newer = max(fresh["tUser"], fresh["tDaReply"])
+        newer = progress_anchor(fresh)
         if newer > (detail.get("quietSince") or 0):
-            return False, (f"期间已有新的对客来往（{fmt_ts(newer)}），"
+            return False, (f"期间已有新的进展（{fmt_ts(newer)}），"
                            f"静默已被打破，提醒已过时")
         return True, ""
 
@@ -3091,6 +3156,27 @@ def check_sub_not_reported(human, group_id, sessions, cfg, now_ms, transcript):
     who = "、".join(names.get(sub, sub) for sub, _, _ in stale)
     oldest = stale[0][1]
     da_name = names.get(human["daId"], human["daId"])
+
+    # 文案的数字从"这个 sub 最近一次回报"算，闸门仍从派活时刻算（2026-09-04）。
+    #
+    # 两把尺子是**故意**的，各管各的事：
+    #   闸门 = now − 派活时刻。SUB_REPORT_LAG_MS=90s / SUB_DONE_LAG_MS 是拿真实
+    #          "派活→回报"滞后分布标定的（两个群 64 次派活：中位 15s、P90 80s、
+    #          最大 333s）。换锚点等于把阈值语义整个换掉，告警会显著提前。
+    #   文案 = now − 上次回报。用户要看的是"距最后一次有进展过去了多久"，
+    #          和 REMIND 同源，同一件事在两条消息里数字能对上。
+    # 因为 stale 的成立条件就是"派活之后没再回报"，上次回报必然早于派活，
+    # 所以文案数字恒 ≥ 闸门数字，不会出现"文案说才 1 分钟却报警了"的自相矛盾。
+    #
+    # 从来没回报过的 sub（recvFrom 里没有它）没有"上次回报"可言，退回派活起算，
+    # 措辞也跟着换 —— 不能对着一个从未回报过的 Agent 说"自上次回报已 X"。
+    last_report = (transcript["recvFrom"] or {}).get(stale[0][0], 0)
+    if last_report:
+        since_ms = now_ms - last_report
+        waited_text = f"，自上次回报已 {fmt_duration(since_ms)}"
+    else:
+        since_ms = now_ms - oldest
+        waited_text = f"，但 {fmt_duration(since_ms)}没有收到回报"
     return {
         "type": "ALERT_SUB_NOT_REPORTED",
         "severity": "ALERT",
@@ -3099,8 +3185,8 @@ def check_sub_not_reported(human, group_id, sessions, cfg, now_ms, transcript):
         "sessionKey": da["sessionKey"],
         "channel": da["channel"],
         "target": da["target"],
-        "text": (f"⚠️ {da_name} 已把任务派给 {who}，但 {fmt_duration(now_ms - oldest)}"
-                 f"没有收到回报。\n　　{recovery_hint(cfg)}"),
+        "text": (f"⚠️ {da_name} 已把任务派给 {who}{waited_text}。"
+                 f"\n　　{recovery_hint(cfg)}"),
         "detail": {
             "subs": [sub for sub, _, _ in stale],
             "tDispatch": oldest,
@@ -3111,6 +3197,10 @@ def check_sub_not_reported(human, group_id, sessions, cfg, now_ms, transcript):
             "recvFrom": dict(transcript["recvFrom"] or {}),
             "subStatus": {sub: status_of.get(sub) for sub, _, _ in stale},
             "lagMs": now_ms - oldest,
+            # 文案里那个数字和它的起点。和 lagMs 分开记：排查时要能一眼看出
+            # "闸门量的是 15min、用户看到的是 45min"，两个都得在。
+            "tLastReport": last_report,
+            "sinceLastReportMs": since_ms,
         },
     }
 
