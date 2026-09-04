@@ -35,7 +35,9 @@
 只有断言+回放、**一次没真触发过**的（别当成验过了）：
 - ALERT_CC_STALLED、ALERT_DA_NOT_REPLIED_AFTER_SUB、ALERT_USER_NOT_REPLIED
   （含「消息被吞」子形态）
-- 同群限流 —— 唯一防刷屏的闸门，调试配置 GROUP_RATE_MAX=60 使它从未被触发
+- 同群限流 —— 管总量的闸门，调试配置 GROUP_RATE_MAX=60 使它从未被触发
+- 群级总冷却（GROUP_COOLDOWN_MS，2026-09-04 新增）—— 管间隔，堵"两个不同类型的
+  事件各走各的冷却、在同一个群短间隔连发"。断言含"同一轮撞车只发 1 条"的端到端钉子
 - quietHours 真实拦截；唤起的 failed / unconfirmed / 后台补报三条分支
 - 生产阈值：至今只在调试值下跑过（interval 5s vs 30s、USER_QUIET_MS 8s vs 300s）
 
@@ -548,6 +550,28 @@ def parse_group_id(session_key):
     return None
 
 
+def sub_status_by_agent(sessions):
+    """{基础 Agent 的 agentId: status}，**只认 group-virtual 会话**。
+
+    为什么必须限定 group-virtual：同一个基础 Agent 在同一个群里可能有两条会话，
+    按 agentId 做键会互相覆盖，取到哪条看排序 —— 是个静默的错判。
+    实测（2026-09-04 本机 35 个群，4 个群命中）群 10233415382 的 shenkuo：
+      agent:shenkuo:jingme:group:dw.zqjz.ts1:group:10233415382   status=None（空壳）
+      agent:shenkuo:jingme:group-virtual:10233415382:zqjzszr      status=done（真在跑的那条）
+    空壳那条 activityTs 反而更新（网关碰过），排序在前，字典推导里被后者覆盖属侥幸；
+    一旦顺序反过来，`status_of[sub]` 就是 None，铁律一的 still_working 变 False，
+    宽限从 10 分钟掉到 90 秒 → 正常派活被误报成"没有回报"。
+
+    派活实际走的就是 group-virtual（`dispatchTo` 的 key 从 sessions_send 的
+    sessionKey 里解出来，形如 agent:<sub>:jingme:group-virtual:<gid>:<da>），
+    所以只收 group-virtual 既消掉冲突、也和功能 23 的筛选保持一致。
+    本机 17 条非 virtual 的基础 Agent 群会话**全部**是空壳（没有 startedAt/status），
+    丢掉它们不会丢任何运行态信息。
+    """
+    return {s["agentId"]: s["status"] for s in sessions
+            if s.get("role") != "数字人" and "group-virtual" in (s.get("sessionKey") or "")}
+
+
 def delivery_workflows(inst_dir, da_id):
     """列出这个数字人 workflow/ 目录下的交付工作流定义文件名，没有返回空列表。
 
@@ -1034,8 +1058,22 @@ def judge_running(sessions, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMIT, cc=
     )
 
     # 信号 4：CC 子会话活跃（方案的第 4 条，旧实现从未接上）
+    #
+    # 和 ALERT_CC_STALLED 一起禁用（CC_STALLED_ENABLED=False）：两者依赖的是同一个
+    # cc["running"]，而它来自会活跃计数泄漏的 session.json。2026-09-03 实测项目
+    # P-20260818（群 10232767188）15 天前就结束了，sessions 里仍留着一个 "1"，
+    # 信号 4 照样命中"1 个子会话在跑"。
+    #
+    # 这里的危害比误报一条告警更重：信号 4 命中就把运行态钉成 running，
+    # 整个 idle 分支（含功能 23 那类基础 Agent 失败告警）全被压住 —— 正是
+    # 2026-09-02 群 10233415382 漏报 2.9 小时的同一种失效，只是换条路径复现。
+    # 那个群当时恰好被快照残留仲裁救成 idle，属于撞巧，不是判据可靠。
     cc = cc or {}
-    if not cc.get("found"):
+    if not CC_STALLED_ENABLED:
+        evidence.append(
+            f"信号4 CC：不采 —— 判据已禁用（活跃计数会泄漏，见 check_cc_stalled）"
+            f"，参考值 {cc.get('activeCount', 0)} 个活跃")
+    elif not cc.get("found"):
         evidence.append(f"信号4 CC：不采 —— {cc.get('why') or '定位不到 CC 项目'}")
     elif cc.get("running"):
         hits.append(f"信号4 CC 活跃：{cc['activeCount']} 个子会话在跑")
@@ -1190,6 +1228,11 @@ THRESHOLD_DEFAULTS = {
     "ACTIVE_WINDOW_MS": 30 * 60 * 1000,        # 步骤 0：这么久没活动就当僵尸群，不巡检
     "USER_QUIET_MS": 5 * 60 * 1000,            # 步骤 F：对客静默这么久才提醒"进行中"
     "COOLDOWN_MS": 30 * 60 * 1000,             # 同一会话同一类事件的冷却
+    # 群级总冷却：同一个群这么久内只发 1 条，**不分事件类型**。
+    # COOLDOWN_MS 按 sessionKey|type 分桶，两个不同类型的事件各走各的冷却，
+    # 于是能在几十秒内背靠背连发（实测形态见 gate() 里的注释）。这道闸门是那个
+    # 缺口的补丁：不管什么类型，一个群短时间内只说一句话。
+    "GROUP_COOLDOWN_MS": 10 * 60 * 1000,
     "GROUP_RATE_WINDOW_MS": 60 * 60 * 1000,    # 同群限流的统计窗口
     "GROUP_RATE_MAX": 3,                       # 同群在窗口内最多发几条
     "MODEL_ERROR_GRACE_MS": 30 * 1000,         # 模型异常后留给自动重试/failover 的宽限
@@ -1214,6 +1257,20 @@ def threshold(cfg, name):
     """取阈值，配置里没写就用默认值。"""
     value = ((cfg or {}).get("thresholds") or {}).get(name)
     return int(value) if isinstance(value, (int, float)) and value > 0 else THRESHOLD_DEFAULTS[name]
+
+
+def threshold_allow_zero(cfg, name):
+    """同 threshold()，但**认 0**（0 = 关掉这道闸门）。
+
+    threshold() 把 0 当"没配"退回默认值，这个保护是故意的：判定类阈值配成 0
+    等于"任何静默都算超时"，一定是误配，退回默认比照着跑安全。
+    但闸门类阈值不一样，0 有明确语义 —— 关掉它。所以单开一个读法，
+    而不是放宽 threshold() 让所有阈值都能被 0 打穿。
+    """
+    value = ((cfg or {}).get("thresholds") or {}).get(name)
+    if isinstance(value, (int, float)) and value >= 0:
+        return int(value)
+    return THRESHOLD_DEFAULTS[name]
 
 
 def debug_only_note(event, cfg):
@@ -1611,8 +1668,11 @@ def check_long_running(human, group_id, sessions, cfg, now_ms, latest_event, tra
         "sessionKey": da["sessionKey"],
         "channel": da["channel"],
         "target": da["target"],
-        "text": (f"🕐 {da_name} {doing}{waited_text}。\n"
-                 f"　　如需查看进度，回复「状态」；如需取消，回复「取消」。"),
+        # 只告知，不带引导。这是纯进度提醒（severity=INFO）：判定已经确认
+        # 工作流在正常推进（运行态 running + 有具体在干什么），没有任何异常需要
+        # 用户介入，让他"回复「状态」"是给正常流程凭空加一步。
+        # 引导语只属于 ALERT —— 那时确实需要用户知道自己能做什么。
+        "text": f"🕐 {da_name} {doing}{waited_text}。",
         "detail": {
             "gate": {"key": "USER_QUIET_MS", "measured": quiet_ms},
             "quietMs": quiet_ms,
@@ -1633,9 +1693,10 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
     """对一个群走一遍判定树，返回 (事件列表, 过程说明)。
 
     目前实现到判定树的：
-      步骤 0  最近没活动 → 僵尸群，跳过
-      步骤 1  运行态三态
-      步骤 F  running + 对客静默超时 → REMIND_LONG_RUNNING
+      步骤 0    最近没活动 → 僵尸群，跳过
+      步骤 0.5  项目已结项 → 交付结束，整群不再通知
+      步骤 1    运行态三态
+      步骤 F    running + 对客静默超时 → REMIND_LONG_RUNNING
     idle 分支的那一串中断告警是后面的功能。
 
     now_ms 与 as_of_ms 分开传：回放历史时刻时，"现在"必须是那个历史时刻，
@@ -1653,13 +1714,40 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
         return [], trace
     trace.append(f"步骤0 活跃检查：最近活动 {idle_ms / 60000:.1f}min 前 → 继续")
 
+    # 步骤 0.5：项目已结项 → 整个群闭嘴，连 REMIND 也不发
+    #
+    # 结项之后交付已经交付完了，没有任何在途任务，此时报出来的全是噪音：消息流里
+    # 那些派活、模型错误都是整个交付过程留下的历史痕迹（"陈旧状态被反复读取"那个
+    # 体质问题在结项后的群里是必然命中，不是概率命中）。
+    #
+    # 放在步骤 0 之后：步骤 0 是纯算术、不碰盘，先让它把僵尸群滤掉，再为剩下的群
+    # 去 glob META.md。结项后群会慢慢变僵尸群、被步骤 0 接管，这道闸门真正管的是
+    # **刚结项那阵子**——群还热着、消息流里全是历史痕迹，正是误报最密的窗口。
+    #
+    # 只在生产实时（as_of_ms is None）生效：META.md 只有"当下"的状态，回放历史时刻
+    # 时它是未来数据 —— 拿今天的"已结项"去屏蔽三天前那次真故障，等于把历史抹平。
+    # 和信号 1/2 仲裁、功能 23 条件 1 是同一条保真度边界。
+    #
+    # 同一个群先后有多个项目时，find_cc_project 取 META.md 最新修改的那个 ——
+    # 所以结项之后群里再立新项目，闸门会自动重新打开，不需要人工解除。
+    project = find_cc_project(group_id, human.get("daId")) if as_of_ms is None else None
+    closed = project_closed(project)
+    if closed:
+        trace.append(f"步骤0.5 结项检查：项目 {project['projectKey']} 已结项"
+                     f"（{closed}）→ 不再有任何通知，跳过")
+        return [], trace
+    if project:
+        trace.append(f"步骤0.5 结项检查：项目 {project['projectKey']}"
+                     f" 状态={project['metaStatus'] or '(空)'}"
+                     f" 结项集成={project['closeStatus'] or '(空)'} → 未结项，继续")
+
     # 步骤 1：运行态
     da = next((s for s in sessions if s["role"] == "数字人"), None)
     # CC 状态：判运行态（信号 4）、生成文案、以及 CC 卡死告警都要用，读一次就好。
     # 注意它只有"当下"的值，回放历史时刻时不可信，所以 as_of_ms 不为空时不采。
+    # project 在步骤 0.5 已经查过了（同样只在 as_of_ms is None 时查），直接复用。
     cc = {"found": False, "why": "回放历史时刻，CC 只有当下状态、不可信，不采"}
     if as_of_ms is None:
-        project = find_cc_project(group_id, human.get("daId"))
         if not project:
             cc = {"found": False, "why": "META.md 里没有这个群聊ID对应的项目"}
         else:
@@ -1703,10 +1791,24 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
             f"　A 模型异常：消息流 errorMessage={transcript['modelErrorMessage'] or '(无)'}"
             f"　trajectory run={(outcome['runId'] or '?')[:8]}"
             f" status={outcome['status']} terminalError={outcome['terminalError']}"
+            f" 本轮起点={fmt_ts(outcome.get('startedTs'))}"
         )
+        # 两条自愈线索都写进 trace：线上排查时最想知道的就是"为什么它还在报/不报了"
+        if (transcript["tModelError"] and outcome.get("startedTs")
+                and transcript["tModelError"] < outcome["startedTs"]):
+            trace.append(
+                f"　　消息流里的错误发生在 {fmt_ts(transcript['tModelError'])}，"
+                f"早于本轮起点 → 是历史残留，不算当前状态"
+            )
         if transcript["tModelError"] and transcript["tDaReply"] > transcript["tModelError"]:
             trace.append(
                 f"　　出错后数字人于 {fmt_ts(transcript['tDaReply'])} 又对客了 → 已自愈，不告警"
+            )
+        if (outcome.get("status") == "success" and outcome.get("endedTs")
+                and transcript["tModelError"]
+                and outcome["endedTs"] > transcript["tModelError"]):
+            trace.append(
+                f"　　出错后有 run 于 {fmt_ts(outcome['endedTs'])} 成功结束 → 已自愈，不告警"
             )
         event = check_model_error(human, group_id, sessions, cfg, now_ms, outcome, transcript)
         if event:
@@ -1718,6 +1820,8 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
                 f"　E CC 卡死：{cc['activeCount']} 个子会话活跃"
                 f"　最后触碰 {fmt_ts(cc.get('lastTouch'))}"
                 f"　项目 {cc.get('projectKey', '?')}"
+                + ("" if CC_STALLED_ENABLED else
+                   "　⏸️ 该判定已禁用（判据不成立，见 check_cc_stalled）")
             )
         event = check_cc_stalled(human, group_id, sessions, cfg, now_ms, cc)
         if event:
@@ -1818,10 +1922,11 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
 #
 # 后面四道是方案 §5.2 的降噪链，缺一道都会真的打扰到人（下面每道都写了实测依据）：
 #
-#   同 signature 已通知   →  丢弃
-#   同类 30min 冷却内     →  丢弃
-#   同群 1 小时超 3 条     →  丢弃
-#   quietHours 且非 WARN  →  只写日志
+#   同 signature 已通知      →  丢弃
+#   同类 30min 冷却内        →  丢弃
+#   同群 10min 内已发过（不分类型）→  丢弃　← 管间隔
+#   同群 1 小时超 3 条        →  丢弃　      ← 管总量
+#   quietHours 且非 WARN     →  只写日志
 
 NOTIFIED_PATH = os.path.join(STATE_DIR, "notified.json")
 
@@ -2000,6 +2105,36 @@ class NotifiedStore:
             left = (cooldown - (now_ms - last_ts)) / 60000
             return False, f"同类事件冷却中，还剩 {left:.1f}min"
 
+        # 群级总冷却：同一个群这么久内只发 1 条，不分类型。
+        #
+        # 为什么上面那道冷却不够：它的键是 `sessionKey|type`，两个**不同类型**的事件
+        # 落在不同桶里，各自的冷却互不相干。于是 ALERT_SUB_NOT_REPORTED 和
+        # REMIND_LONG_RUNNING 撞在同一个群时，两条都是"本类型第一次"，两道都放行，
+        # 群里就在很短间隔内连收两条巡检消息。
+        #
+        # 同群限流（GROUP_RATE_*）也接不住这种：它管的是"1 小时内最多 3 条"这种量级，
+        # 上限 3 意味着连发 2 条完全在额度内。**限流管总量，这道管间隔**，两者不重叠。
+        #
+        # 放在同类冷却之后、同群限流之前：先让更精确的类型级判断把"同一件事重复报"
+        # 滤掉（那种拦下原因更具体、日志更有用），剩下的才交给群级总闸；而它比限流更
+        # 严格（1 条 vs 3 条），先跑省得把额度算进去。
+        #
+        # 用 groupSends 的最近一条时刻，不新开存储：那份记录本来就是"这个群真发出去的
+        # 每一条的时刻"，正是这道闸门要问的东西。record() 里已有裁剪逻辑，
+        # 但裁剪窗口取的是 max(24h, 限流窗口)，天然覆盖群级冷却（默认 10min），
+        # 不会出现"该拦的记录被提前砍掉"。
+        # 用 threshold_allow_zero：这道闸门配 0 有明确语义（关掉），
+        # 不该像判定类阈值那样把 0 当误配退回默认值。
+        group_cooldown = threshold_allow_zero(cfg, "GROUP_COOLDOWN_MS")
+        if group_cooldown > 0:
+            sends = [t for t in self.group_sends.get(str(event["groupId"]), [])
+                     if isinstance(t, (int, float))]
+            last_send = max(sends) if sends else 0
+            if last_send and now_ms - last_send < group_cooldown:
+                left = (group_cooldown - (now_ms - last_send)) / 60000
+                return False, (f"本群总冷却中（{group_cooldown / 60000:.0f}min 内只发 1 条，"
+                               f"不分类型），还剩 {left:.1f}min")
+
         window = threshold(cfg, "GROUP_RATE_WINDOW_MS")
         limit = threshold(cfg, "GROUP_RATE_MAX")
         recent = self._recent_group_sends(event["groupId"], now_ms, window)
@@ -2019,7 +2154,11 @@ class NotifiedStore:
         # 一条，每次 record 都按"当下往前 24 小时"裁剪，前两条被砍，groupSends 只剩
         # 1 条，第 4 条于是被放行 —— 而 3 天窗口内其实已经发满 3 条。
         # 所以裁剪窗口取"配置的限流窗口"和 24 小时里更大的那个。
-        keep_window = max(24 * 3600 * 1000, threshold(cfg, "GROUP_RATE_WINDOW_MS"))
+        # 群级总冷却也读这份记录，所以它的窗口也得算进来 —— 否则把
+        # GROUP_COOLDOWN_MS 配到 24 小时以上时，该拦的记录会被裁掉、总冷却失效。
+        keep_window = max(24 * 3600 * 1000,
+                          threshold(cfg, "GROUP_RATE_WINDOW_MS"),
+                          threshold_allow_zero(cfg, "GROUP_COOLDOWN_MS"))
         kept = [t for t in self.group_sends.get(group_id, [])
                 if isinstance(t, (int, float)) and now_ms - t < keep_window]
         kept.append(now_ms)
@@ -2091,11 +2230,21 @@ def recovery_hint(cfg):
     所以尾句只能由这一个地方按开关的真实状态生成，各告警正文只描述"发生了什么"，
     不许自己承诺"接下来会怎样"。
 
-    唤起成功与否在发这条消息时还不知道（顺序是先告诉用户、再唤起），所以措辞要把
-    两种结果都盖住：唤起成功用户不用管，唤起失败用户还知道自己能救。
+    2026-09-04 去掉了唤起开启时的"若仍无进展，请回复任意消息"。原措辞想同时盖住
+    唤起成功和失败两种结果，代价是**每次都在给用户派活**，而绝大多数情况下唤起是
+    成功的，那句话纯属多余的负担。
+
+    ⚠️ 曾考虑按"唤起可送达"预判来分支措辞（可达就写"无需回复"，探测不到才保留
+    "请回复"），实测否掉：本机 17 个群**全部**命中"可达"（sessionFile 存在 + 发送
+    脚本存在），预判器没有区分度 —— 真正的失败模式是慢速失败（2026-08-24 16:04:27
+    那次网络抽了、openclaw 在 8 秒探测窗口之后才失败），静态可达性根本预测不到。
+    加一个恒为真的分支只是让代码更绕，不如直接给出确定的措辞。
+
+    兜底交给后台补报（report_pending_wakes）：唤起真没送到，日志里会如实写
+    "实际未送达"，那是需要人看的信号，不该转嫁成用户的义务。
     """
     if wake_enabled(cfg):
-        return "已自动唤起数字人继续处理；若仍无进展，请回复任意消息。"
+        return "已自动唤起数字人继续处理。"
     return "请回复任意消息以继续。"
 
 
@@ -2187,6 +2336,13 @@ def still_relevant(human, group_id, sessions, event, cfg, now_ms):
         outcome = latest_run_outcome(traj)
         if outcome["found"] and outcome["runId"] != detail.get("runId"):
             return False, f"最近 run 已换成 {outcome['runId'][:8]}，告警已过时"
+        # 和判定用同一条自愈线索（见 check_model_error 的自愈判定二）：错误之后有 run
+        # 成功结束就是自愈了。复查必须认同一把尺子，否则判定改了它还按老规矩放行。
+        anchor = detail.get("anchorTs") or 0
+        if (anchor and outcome.get("status") == "success"
+                and (outcome.get("endedTs") or 0) > anchor):
+            return False, (f"错误之后已有 run 于 {fmt_ts(outcome['endedTs'])} 成功结束，"
+                           f"已自愈，告警已过时")
         return True, ""
 
     return True, ""
@@ -2567,8 +2723,8 @@ def handle_events(human, group_id, sessions, events, cfg, notified, now_ms=None)
     真正需要注意的信息反而被埋掉。
 
     顺序按方案 §5.2，前面加了类别总开关、末尾加了一道发送前复查：
-      remind 总开关 → signature 去重 → 同类冷却 → 同群限流 → quietHours
-      → 发送前复查 → 真发
+      remind 总开关 → signature 去重 → 同类冷却 → 群级总冷却 → 同群限流
+      → quietHours → 发送前复查 → 真发
 
     总开关放最前面：被它关掉的事件根本不会发，不该白占去重和冷却的额度。
 
@@ -2812,10 +2968,15 @@ def latest_run_outcome(traj_file, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMI
     但它们的时间戳一定是前者更早。只有把两者归到同一个 runId 下一起看，才能判断
     "这一轮是不是异常收场"，而不是拿时间戳互相比较（那样恒假）。
 
-    返回 {"runId","endedTs","status","flags":[(字段, 说明)],"promptErrorSource",
-          "externalAbort","found":bool}
+    也顺带带出这一 run 的 session.started 时刻（startedTs）。它是"消息流里的错误
+    还算不算当前状态"的时间下界 —— 早于本轮起点的错误是历史，见 check_model_error。
+    为此扫描要多认一个 session.started：它一定在本 run 的 ended 之前、且 runId 相同，
+    所以不会让扫描范围变大（碰到别的 run 照样 break）。
+
+    返回 {"runId","endedTs","startedTs","status","flags":[(字段, 说明)],
+          "promptErrorSource","externalAbort","found":bool}
     """
-    out = {"runId": "", "endedTs": 0, "status": None, "flags": [],
+    out = {"runId": "", "endedTs": 0, "startedTs": 0, "status": None, "flags": [],
            "promptErrorSource": None, "externalAbort": False,
            "terminalError": None, "found": False}
     if not traj_file:
@@ -2826,12 +2987,23 @@ def latest_run_outcome(traj_file, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMI
             event = json_object(raw)
             if event is None:
                 continue
-            if event.get("type") not in RUN_OUTCOME_TYPES:
+            kind = event.get("type")
+            if kind not in RUN_OUTCOME_TYPES and kind != "session.started":
                 continue
             ts = iso_to_ms(event.get("ts"))
             if as_of_ms is not None and ts > as_of_ms:
                 continue
             run_id = event.get("runId") or ""
+            if kind == "session.started":
+                # 只有属于目标 run 的起点才要；扫到更早那个 run 的起点就收工。
+                # target_run 还没定就跳过 —— 那说明这个 run 只有 started 没有收尾，
+                # 属于"还在跑"，本函数只回答"最近一个已结束的 run 怎么收场"。
+                if target_run is not None and run_id == target_run:
+                    out["startedTs"] = ts
+                    break
+                if target_run is not None:
+                    break
+                continue
             if target_run is None:
                 # 倒着扫，第一个碰到的 session.ended 就是最近结束的那个 run。
                 # 如果先碰到 model.completed（说明这一 run 还没写 ended），也用它定 run。
@@ -2891,9 +3063,12 @@ def check_sub_not_reported(human, group_id, sessions, cfg, now_ms, transcript):
       · sub 还在 running  → 它在干活，用长宽限（SUB_REPORT_LAG_MS）只做兜底
       · sub 已经不 running → 它结束了却没回报，是真异常，用短宽限（SUB_DONE_LAG_MS）
     这也正是方案"基础 Agent 已完但未回报"的原意，旧实现只是把"已完"表达错了。
+
+    status 的读取走 sub_status_by_agent()（只认 group-virtual），原因见那个函数 ——
+    同名两条会话会互相覆盖，误取空壳会把长宽限降成短宽限，正常派活变误报。
     """
     names = human.get("agentNames") or {}
-    status_of = {s["agentId"]: s["status"] for s in sessions if s["role"] != "数字人"}
+    status_of = sub_status_by_agent(sessions)
     long_lag = threshold(cfg, "SUB_REPORT_LAG_MS")
     done_lag = threshold(cfg, "SUB_DONE_LAG_MS")
     stale = []
@@ -3015,6 +3190,12 @@ def check_da_not_replied_after_sub(human, group_id, sessions, cfg, now_ms, trans
 CC_PROJECTS_DIR = os.path.join(OPENCLAW_HOME, "projects")
 CC_CONFIG_DIR = os.path.join(OPENCLAW_HOME, "cc-config", "projects")
 
+# ALERT_CC_STALLED 的开关。2026-09-03 实测发现判据不成立（活跃计数会泄漏、
+# max_last_ts 不是心跳），详见 check_cc_stalled 的 docstring。
+# 写成模块常量而不是配置项：这不是"用户可以按需开关"的功能，而是"判据错了、
+# 修好之前不许开"。放进 config.json 会让人以为打开它就能用。
+CC_STALLED_ENABLED = False
+
 
 def encode_cc_dir(path):
     """把项目源码路径编码成 cc-config 下的目录名：/ 和 . 都变成 -。"""
@@ -3059,8 +3240,54 @@ def find_cc_project(group_id, da_id=None):
                 "projectKey": os.path.basename(project_dir),
                 "ccDir": os.path.join(CC_CONFIG_DIR,
                                       encode_cc_dir(os.path.join(project_dir, "src"))),
+                # 结项闸门要用的三个字段，顺手在这里取走 —— META.md 已经读进内存了，
+                # 再开一遍文件只是为了同样的三行，不值当。
+                "metaStatus": read_meta_field(text, "状态"),
+                "closeStatus": read_meta_field(text, "finalDeliveryCloseStatus"),
+                "closedAt": read_meta_field(text, "结项时间"),
             })
     return best[1] if best else None
+
+
+# 「已结项」的判据。META.md 的「状态」字段值空间见生产的 project_meta.py：
+#   in-progress / done / terminated / paused
+# 取 done 这一个值，理由是它**只**由结项脚本 final-delivery-integrate.py 在整体结项
+# 成功时写入（`if overall == STATUS_DONE: final_meta_updates["状态"] = META_STATUS_DONE`），
+# 是全项目唯一一处写点，且写进去之后不会再被改回来。
+#
+# ⚠️ 不能改用 finalDeliveryCloseStatus == DONE 做判据：它记的是**最近一次**结项集成
+# 的结果，会被重跑覆盖。实测本机三个已结项项目里有两个是 PARTIAL_FAILED
+# （群 10232962603、10233415382 —— 后者正是 2026-09-04 刚结项那个），
+# 都是结项完成之后又跑了一次 relink 把它刷成部分失败的。拿它当判据会漏掉一半。
+# 反过来它可以做**补充**判据：状态字段没写成功、但结项集成明确 DONE 的，也算结项。
+#
+# ⚠️ 也不能用 workflow 实例的 status=closed + outcome=completed（2026-09-04 线上
+# 提过这个方向，实测否掉）。生产 132 个实例状态空间很干净（open/None 70、
+# closed/completed 56、closed/cancelled 6），但对齐会话活动后判据不成立：
+# closed&completed 的 56 个群里，**30 个（54%）在工作流关闭后群里仍有活动**，
+# 滞后中位 25.0 小时、最大 200.2 小时、超过 24 小时的 17 个。
+# 工作流实例关闭 ≠ 交付结束 —— 群 10233366343 的 clarify-all（interrupted）之后
+# 又派了 backend-dev-full-auto（done）、再派 delivery-close（至今 pending）。
+# 拿它闸门会在交付还在推进时把整个群的监控关掉，比重复告警严重得多。
+# 详见 README「已结项判据：为什么是「状态」字段」。
+PROJECT_STATUS_DONE = "done"
+PROJECT_CLOSE_STATUS_DONE = "DONE"
+
+
+def project_closed(project):
+    """项目是不是已经结项。返回一句可读的理由（真值），没结项返回空串。
+
+    返回理由而不是 True/False：结项会让整个群彻底闭嘴，日志里必须说得出
+    "凭哪个字段判的"，否则出现"这个群怎么从来不报"时无从查起。
+    """
+    if not project:
+        return ""
+    if (project.get("metaStatus") or "").strip().lower() == PROJECT_STATUS_DONE:
+        at = project.get("closedAt") or ""
+        return f"META.md 状态=done{'（结项时间 ' + at + '）' if at else ''}"
+    if (project.get("closeStatus") or "").strip().upper() == PROJECT_CLOSE_STATUS_DONE:
+        return "META.md finalDeliveryCloseStatus=DONE"
+    return ""
 
 
 def read_cc_status(cc_dir):
@@ -3100,11 +3327,46 @@ def read_cc_status(cc_dir):
 
 
 def check_cc_stalled(human, group_id, sessions, cfg, now_ms, cc):
-    """E · CC 卡死 → ALERT_CC_STALLED。
+    """E · CC 卡死 → ALERT_CC_STALLED。**当前已禁用，判据不成立。**
 
-    判据（方案 §8.2 E）：CC 显示在跑，但已经很久没被碰过。
-    "很久"取 CC_STALE_MS；定位不到 CC 项目时直接跳过，不猜。
+    原判据（方案 §8.2 E）：CC 显示在跑（sessions 里有非零活跃计数），但
+    max_last_ts 已经很久（CC_STALE_MS，3 分钟）没动 → 判卡死。
+
+    2026-09-03 实测推翻了它的两个前提：
+
+    一、running 不可信 —— 活跃计数会泄漏。本机项目 P-20260818（五子棋，
+        群 10232767188）的 session.json 里 sessions 是
+            {"bf39b3f9": "0", "aa39177e": "0", "b0b6fc24": "1"}
+        active=1 判成"在跑"，而 max_last_ts 停在 08-19 10:36:20（距今 15 天）。
+        同一个 sid b0b6fc24 在新项目 P-20260902 里是 "0" —— 老项目那个 "1" 是
+        进程没把计数归零留下的残留。这种情况下"在跑"整个是假的，再去测量它
+        "卡了多久"毫无意义：那个任务 15 天前就结束了。
+        照原判据，只要这个群还活跃、判定能走到步骤 E，就会报"代码执行子任务
+        无响应（已 15 天没有进展）"。
+
+    二、max_last_ts 的刷新时机从没被验证 —— 本机两个项目它都明显落后于文件
+        mtime（老项目落后 15 天，新项目落后 105 秒）。文件在被写、它却不动，
+        说明它记的是"最后一条消息/工具调用"这类内容层事件，不是进程心跳。
+        长耗时单步（跑十分钟的构建、大文件读取、等 CC 侧确认）期间它完全可以
+        纹丝不动 —— 那不是卡死，正是在干活，3 分钟阈值对这种场景短得离谱。
+        原实现拿 session.lock 的 mtime 兜底（lastTouch 取两者更晚），但实测
+        lock 和 session.json 是一起写的、mtime 完全相同，不是独立心跳，
+        救不了上面第一种情况。
+
+    所以这条告警先禁用，生产跑其余六类。它一直是"仅断言+回放、生产未触发过"，
+    不是因为 CC 从不卡死，而是因为它排在 A 之后、还要走到 idle 分支，多数时候
+    前面先返回了 —— 一旦顺序或条件变化，它第一个报出来的很可能就是残留计数误报。
+
+    重新启用前要做的事（按可信度排序）：
+      1. 换判据：看项目源码目录 <项目>/src 下真实文件的 mtime。CC 在干活必然
+         碰文件，文件系统比记账字段可信。代价是要扫目录，比读一个 JSON 贵。
+      2. 或保留现判据但加护栏：要求 max_last_ts 不早于对应数字人会话本轮起点
+         （能排掉上面那个 15 天前的残留），且阈值按实测重新推导。
+    两条都需要先拿到"CC 正常干活时这些字段的真实刷新节奏"的实测数据 ——
+    本机只有 2 个 CC 项目、都不在跑，现在推不出可靠阈值。
     """
+    if not CC_STALLED_ENABLED:
+        return None
     if not cc.get("found") or not cc.get("running"):
         return None
     last_touch = cc.get("lastTouch") or 0
@@ -3236,16 +3498,40 @@ def check_model_error(human, group_id, sessions, cfg, now_ms, outcome, transcrip
     实测（2026-08-22 13:16:56）消息流里是 errorMessage='Connection error.'，
     比 trajectory 的 terminalError='non_deliverable_terminal_turn' 好懂得多。
 
-    自愈判定：出错之后数字人又给用户回过话（tDaReply > tModelError）就说明已经
-    恢复，不该再报。少了这条，一次一小时前的失败会被无限期反复判定为"当前异常"。
+    自愈判定有两条，缺一不可（2026-09-03 线上事故 groupId=10233353135 的教训）：
+      1. 出错之后数字人又给用户回过话（tDaReply > anchor）
+      2. 出错之后有 run 成功结束（outcome.status=success 且 endedTs > anchor）
+    第 2 条是后补的，也是更强的证据。那次事故里 zhyyszr 11:47 真的 idle timeout 了，
+    11:50 就自愈、12:01 和 12:06 都正常跑完（status=success），但巡检器从 09:56
+    一直告到下午 —— 因为那几轮的收尾是 NO_REPLY 或只对内派活，tDaReply 压根没往前走，
+    只看第 1 条的自愈判定完全失效。"数字员工又成功跑了几轮"是最强的自愈信号，
+    以前判据里居然没用到它。
+
+    还有一条时间下界（见下面 run_started_at 那段）：消息流里的错误必须属于**最近
+    一个 run**才采信。同一次事故的另一半原因就在那儿。
     """
     transcript = transcript or {}
     reason = None
     anchor = 0
     run_id = outcome.get("runId") or ""
 
-    # 优先用消息流里的错误：实时且原因具体
+    # 消息流里的错误只在它属于"最近一个 run"时才算当前状态。
+    #
+    # 2026-09-03 线上事故：zhyyszr 的会话有 4.4MB，而 TRANSCRIPT_SCAN_LIMIT 是 8MB
+    # —— 整个文件都在扫描范围内。scan_transcript 倒扫遇到第一个 stopReason=error
+    # 就记进 tModelError，**没有任何时间下界**，于是几小时前那次 idle timeout 每轮
+    # 都被重新捞出来当"当前的模型错误"，配合 30 分钟冷却机械式重复告警了一整天。
+    #
+    # 判定"当前是否异常"本来就只该看当前这一轮。早于最近 run 起点的错误是历史，
+    # 不是状态。取不到起点时（trajectory 缺失/触顶）不设下界，维持原行为 ——
+    # 宁可多报一条，也不要因为读不到 trajectory 就把真实故障漏掉。
+    run_started_at = outcome.get("startedTs") or 0
     t_model_error = transcript.get("tModelError") or 0
+    stale_error_ts = 0
+    if t_model_error and run_started_at and t_model_error < run_started_at:
+        stale_error_ts, t_model_error = t_model_error, 0   # 陈旧错误，不属于本轮
+
+    # 优先用消息流里的错误：实时且原因具体
     if t_model_error:
         message = transcript.get("modelErrorMessage") or ""
         reason = f"模型调用失败：{message}" if message else "模型调用失败"
@@ -3277,9 +3563,19 @@ def check_model_error(human, group_id, sessions, cfg, now_ms, outcome, transcrip
     if reason is None:
         return None
 
-    # 出错之后数字人又对客了 → 已自愈，不报
+    # 自愈判定一：出错之后数字人又对客了 → 已自愈，不报
     replied_after = transcript.get("tDaReply") or 0
     if anchor and replied_after > anchor:
+        return None
+
+    # 自愈判定二：出错之后有 run 成功结束 → 已自愈，不报。
+    #
+    # 这是比"又对客了"更强的证据，而且能覆盖对客判定盖不到的形态：一轮跑完可能
+    # 收尾是 NO_REPLY、也可能只对内派活，两种都不会让 tDaReply 前进。
+    # 2026-09-03 线上事故就栽在这个缺口上 —— 11:47 的错误在 11:50 已自愈、
+    # 12:01/12:06 都 status=success，但 tDaReply 没动，于是一直告到下午。
+    if (anchor and outcome.get("status") == "success"
+            and (outcome.get("endedTs") or 0) > anchor):
         return None
 
     # 算不出锚点时退回群里最近一次活动时间，免得因为拿不到时刻就永远不告警
@@ -3317,6 +3613,10 @@ def check_model_error(human, group_id, sessions, cfg, now_ms, outcome, transcrip
             "tModelError": t_model_error,
             "modelErrorMessage": transcript.get("modelErrorMessage") or "",
             "anchorTs": anchor,
+            "runStartedTs": run_started_at,
+            # 消息流里有错误但被时间下界判成历史残留时，记下它 —— 排查线上重复告警时
+            # 最需要知道的就是"判据到底读到了哪个时刻的错误"
+            "staleErrorTs": stale_error_ts,
         },
     }
 
