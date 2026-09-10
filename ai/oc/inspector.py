@@ -25,6 +25,10 @@
 - 功能 19：运行时注入的 role=user 消息不算用户发言（靠 __openclaw 结构判据）
 - 功能 20：标出"仅调试阈值触发"的事件（联调期不用手工回放去分辨真假）
 - 功能 21：remind 总开关（方案 §6.3 列了但一直是 0 引用的空承诺）
+- 功能 22：日志按天分文件 + 话术日志 messages.log（只记真投递出去的话）
+- 功能 23：基础 Agent 执行失败无人接手 ALERT_SUB_RUN_FAILED（full-auto 派活盲区）
+- 功能 24：工作流节点开着没人接 ALERT_WORKFLOW_NODE_STALLED
+  （数据源是编排层 state.json，和其余判据的会话层数据源正交）
 
 真实端到端跑通的（有数据铁证）：
 - REMIND_LONG_RUNNING 69 次 / ALERT_MODEL_ERROR 20 次 / ALERT_SUB_NOT_REPORTED 2 次
@@ -38,6 +42,8 @@
 - 同群限流 —— 管总量的闸门，调试配置 GROUP_RATE_MAX=60 使它从未被触发
 - 群级总冷却（GROUP_COOLDOWN_MS，2026-09-04 新增）—— 管间隔，堵"两个不同类型的
   事件各走各的冷却、在同一个群短间隔连发"。断言含"同一轮撞车只发 1 条"的端到端钉子
+- ALERT_WORKFLOW_NODE_STALLED（功能 24，2026-09-09 新增）—— 本机 6 个 open
+  execution 全部不命中（群都凉了几千分钟），"能报出来"只有合成断言
 - quietHours 真实拦截；唤起的 failed / unconfirmed / 后台补报三条分支
 - 生产阈值：至今只在调试值下跑过（interval 5s vs 30s、USER_QUIET_MS 8s vs 300s）
 
@@ -1324,6 +1330,59 @@ def _tool_result_text(msg):
     )
 
 
+def _dispatch_assignee(msg):
+    """从 exec 的 toolResult 里认出 workflow-dispatch.py 的派活，返回被派的 agentId。
+
+    不是派活（或没送达）就返回空串。
+
+    ## 为什么需要这条路径（2026-09-08 线上漏报）
+
+    派活有两条链路，只有第一条会在数字人消息流里留下 `sessions_send` 顶层工具调用：
+
+      1. sessions_send(sessionKey=agent:<sub>:...)          ← 顶层工具，能认出来
+      2. exec → workflow-dispatch.py → send-card.py
+         → openclaw agent --session-key agent:<sub>:...      ← 顶层只有 exec
+
+    第 2 条是规约里的**唯一发卡入口**（common-skills/runtime/zqjz-task-handoff/
+    SKILL.md:19「工作流节点派发：workflow-dispatch.py（唯一发卡入口）」），也就是说
+    正式工作流节点的派活**全部**走这条，而 `check_sub_not_reported` 从源头就看不见。
+
+    实测漏报（群 10233675800）：21:38:13 数字人经 workflow-dispatch.py 把 backend-dev
+    派给沈括，`delivered=true`、`sendStatus.status=SUCCESS`，但沈括直到次日 09:56 被
+    人工催办才进入会话 —— 中间 12 小时零告警。`dispatchTo` 里压根没有沈括这条记录。
+
+    ## 为什么读这个字段是可靠的
+
+    exec 的 toolResult 本来就已经被扫进 `exec_results`（用于判断 send-user-message.py
+    投递成功与否），这里只是多解一层 JSON，**不新增数据源、不增加扫描开销**。
+    workflow-dispatch.py 的输出契约稳定（见其文件头 docstring）：
+
+      taskId / assignee / dispatcher / selfDispatch / delivered / sendStatus
+
+    判据取 `assignee`，并要求 `delivered is True` —— 没送达的不算派活（否则会对着
+    一个压根没发出去的任务催回报，那是另一类故障，该由投递失败自己去报）。
+
+    `selfDispatch=true`（执行者==调度者）也要排除：数字人派给自己，不存在"等回报"。
+
+    ⚠️ 不用 `sendStatus.sessionKey` 解 agentId 而用 `assignee`：前者在自派/解析失败
+    时可能缺失，而 `assignee` 是建卡时就写死的必有字段。两者正常一致（sessionKey
+    形如 agent:<assignee>:jingme:group-virtual:<gid>:<da>）。
+    """
+    result = json_object(_tool_result_text(msg))
+    if not isinstance(result, dict):
+        return ""
+    # taskId + assignee 同时在场，才足以认定这是一次 workflow-dispatch.py 派活。
+    # 光看 assignee 太松：别的脚本也可能输出这个词。
+    if not result.get("taskId") or result.get("ok") is not True:
+        return ""
+    if result.get("selfDispatch") is True:
+        return ""
+    if result.get("delivered") is not True:
+        return ""
+    assignee = result.get("assignee")
+    return assignee if isinstance(assignee, str) and assignee else ""
+
+
 def _send_message_type(msg):
     """从 exec 的 toolResult 里取 send-user-message.py 的 messageType。
 
@@ -1446,6 +1505,19 @@ def scan_transcript(session_file, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMI
                 if msg.get("toolName") == "exec":
                     exec_results[msg.get("toolCallId")] = (
                         _send_result_ok(msg), ts, _send_message_type(msg))
+                    # 派活的第二条链路：exec → workflow-dispatch.py（规约里的唯一
+                    # 发卡入口）。顶层工具是 exec，所以下面 sessions_send 那段认不出
+                    # 它，必须在这里单独认一次，否则正式工作流节点的派活全部漏掉。
+                    # 详见 _dispatch_assignee 的 docstring（含 2026-09-08 实测漏报）。
+                    #
+                    # 时刻取 toolResult 的落盘时刻（脚本返回时），比 toolCall 晚几秒。
+                    # 用它而不是 toolCall 的时刻，是因为"派活成立"的证据（delivered、
+                    # assignee）只存在于结果里；差几秒对 10 分钟级的宽限无影响。
+                    dispatched_to = _dispatch_assignee(msg)
+                    if dispatched_to and dispatched_to not in out["dispatchTo"]:
+                        out["dispatchTo"][dispatched_to] = ts
+                        if not out["tDispatch"]:
+                            out["tDispatch"] = ts
             elif role == "assistant":
                 # 模型调用失败：消息流里是实时可见的，且带具体原因，比 trajectory 强
                 if msg.get("stopReason") == "error" and not out["tModelError"]:
@@ -1897,6 +1969,26 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
                          f"failedAt={fmt_ts(event['detail']['failedAt'])}")
             return [event], trace
 
+        # 功能 24：工作流节点开着但没人接（编排层数据源，会话层完全没动静才报）。
+        # 排在功能 23 之后：那两个判据更具体（有派活记录 / 有失败的 run），
+        # 这里只兜"编排层开着、会话层压根看不到这单活"的空隙。
+        open_nodes = (read_workflow_open_nodes(group_id, human.get("daId"), now_ms)
+                      if as_of_ms is None else [])
+        if open_nodes:
+            trace.append(
+                "　功能24 工作流节点：" + "　".join(
+                    f"{n['node']}({n['executionId'][:24]}) 开启 "
+                    f"{(now_ms - n['startedAt']) / 60000:.0f}min"
+                    for n in open_nodes[:4])
+            )
+        event = check_workflow_node_stalled(human, group_id, sessions, cfg, now_ms,
+                                            transcript, as_of_ms=as_of_ms)
+        if event:
+            trace.append(f"→ 命中 {event['type']}：node={event['detail']['node']} "
+                         f"executor={event['detail']['executor'] or '?'} "
+                         f"开启 {event['detail']['waitedMs'] / 60000:.0f}min")
+            return [event], trace
+
         event = check_user_not_replied(human, group_id, sessions, cfg, now_ms, transcript)
         if event:
             trace.append(f"→ 命中 {event['type']}（形态 {event['detail']['form']}）")
@@ -2033,6 +2125,11 @@ def event_signature(event):
     if event["type"] == "ALERT_SUB_RUN_FAILED":
         # 按"哪个 sub + 哪次失败"去重：同一次失败只告一次，重跑后又失败是新一件事
         return f"{detail.get('sub', '')}:{detail.get('failedAt', 0)}"
+    if event["type"] == "ALERT_WORKFLOW_NODE_STALLED":
+        # 按 executionId 去重：同一次节点执行只告一次。节点重新开一次执行
+        # （executionId 变了）是新一件事，可以再报。
+        # 不用 startedAt：同一个 execution 的 startedAt 不会变，加进来没有信息量。
+        return f"{detail.get('executionId', '')}:{detail.get('node', '')}"
     return str(detail.get("quietSince", ""))
 
 
@@ -2448,6 +2545,9 @@ WAKE_EVENT_TYPES = (
     "ALERT_USER_NOT_REPLIED",
     "ALERT_DA_NOT_REPLIED_AFTER_SUB",
     "ALERT_SUB_RUN_FAILED",
+    # 功能 24：工作流节点开着没人接。唤起是对的 —— 这个形态最可能的成因就是
+    # 派发没落地，让数字人自己重新派一次正是它该做的事。
+    "ALERT_WORKFLOW_NODE_STALLED",
 )
 
 # 唤起后最多等多久拿"真送到了"的证据。到点还没证据就如实说"未确认"，不谎报成功。
@@ -2529,6 +2629,238 @@ def latest_run_outcome_lite(traj_file, as_of_ms=None, scan_bytes=8 * 1024 * 1024
     except OSError:
         return None
     return last
+
+
+# ------- 功能 24：工作流节点开着但没人接 ALERT_WORKFLOW_NODE_STALLED -------
+#
+# —— 工作流实例的 state.json（编排层的权威事实），而巡检器此前所有判据都来自会话层
+# （消息流 + sessions.json）。两者正交，各自能看见对方的盲区。
+#
+# 会话层看不见、编排层能看见的形态：**节点开着，但压根没派出去**。
+#   · 铁律一（ALERT_SUB_NOT_REPORTED）要先有"派活"记录才谈得上"没回报"；
+#   · 功能 23（ALERT_SUB_RUN_FAILED）要先有基础 Agent 的 run 才谈得上"失败"。
+# 派发脚本投递失败（sendStatus.status=FAILED）时两条都不成立，而 state.json 里
+# 那个 execution 会一直挂着 status=open —— 没有任何告警覆盖这个形态。
+#
+# ⚠️ 从那个脚本借数据源，但**不借它的判据**。实测它的两处判据在本机站不住：
+#
+# 1. `elapsed_min` 从 execution.startedAt 单调累计，超阈值就报。本机 6 个 open
+#    execution 全部超 30 分钟（6442 ~ 19077 分钟，最久 13 天），**全量命中**，
+#    没有任何区分度。这和进度提醒那个"数字只会涨"的老问题同源：单调时长回答不了
+#    "现在还有没有人在管"。所以本判据必须叠"群最近还活跃"。
+# 2. `openclaw sessions list --agent X --active 60` 的输出拿 bool(stdout.strip())
+#    判"有没有活跃会话"——实测**恒为真**：没有活跃会话时它照样打 4 行
+#    （"Sessions listed: 0" / "No sessions found." 等），退出码 0。那个脚本里
+#    "⚠️ executor 最近60分钟无活跃session" 永远打不出来。我们不调 CLI，直接读盘。
+#
+# 也不采它的硬编码过滤（`da != 'zfqzzcxbs'` 写死名单、`projectKey < 'P-20260901'`
+# 写死日期界线）——前者与"看能力实存"的发现机制冲突，后者是个永不移动的门槛。
+#
+# 数据位置（实测本机唯一形态，注意**不在**各数字人实例目录下，而在共享 contexts）：
+#   ~/.openclaw/contexts/groups/<gid>/<da>/workflow-instances/<inst>/state.json
+# 这与 task.py 的 data_dir() 一致（ZQJZ_DATA_DIR 覆盖，默认 ~/.openclaw）。
+WORKFLOW_CONTEXTS_DIR = os.path.join(OPENCLAW_HOME, "contexts", "groups")
+
+# 节点开着、且这么久没有任何进展才算"没人接"。
+#
+# 比功能 23 的 30 分钟宽松一档：这道判据针对的是"派发没落地"，而派发重试、
+# 数字人被唤起后重新派活都可能在几十分钟量级；报早了会打断正在自愈的流程。
+# 60 分钟是保守起点，等线上攒够"节点从 open 到实际有人接"的耗时分布再标定。
+WORKFLOW_NODE_STALLED_MS = 60 * 60 * 1000
+THRESHOLD_DEFAULTS["WORKFLOW_NODE_STALLED_MS"] = WORKFLOW_NODE_STALLED_MS
+
+
+def read_workflow_open_nodes(group_id, da_id, now_ms):
+    """读这个群的工作流实例，返回还开着的节点执行列表（按开始时间从早到晚）。
+
+    每项：{"node","executionId","startedAt","instanceId","workflowId","projectKey"}
+
+    只认 `status=open` 的实例里 `status=open` 的 execution —— 两层都得开着。
+    实例已经 closed 的，里面残留的 open execution 是收尾时没清干净的痕迹，不算。
+
+    ⚠️ startedAt 是带时区的 ISO（实测 "2026-08-29T16:14:20+08:00"，不是 Z 结尾），
+    iso_to_ms 处理不了这个形态，所以这里单独解析。晚于 now_ms 的一律丢掉：
+    回放历史时刻时 state.json 是"当下"的快照，未来才开始的 execution 不该算进来。
+    """
+    out = []
+    pattern = os.path.join(WORKFLOW_CONTEXTS_DIR, str(group_id), str(da_id),
+                           "workflow-instances", "*", "state.json")
+    for path in sorted(glob.glob(pattern)):
+        data = json_object_from_file(path) or {}
+        if data.get("status") != "open":
+            continue
+        project_key = ((data.get("vars") or {}).get("projectKey")
+                       or (data.get("runtime") or {}).get("projectKey") or "")
+        nodes = data.get("nodes")
+        if not isinstance(nodes, dict):
+            continue
+        for node_id, node in nodes.items():
+            if not isinstance(node, dict):
+                continue
+            for execution in (node.get("executions") or []):
+                if not isinstance(execution, dict):
+                    continue
+                if execution.get("status") != "open":
+                    continue
+                started = _workflow_ts(execution.get("startedAt"))
+                if not started or started > now_ms:
+                    continue
+                out.append({
+                    "node": node_id,
+                    "executionId": execution.get("executionId") or "",
+                    "startedAt": started,
+                    "instanceId": data.get("workflowInstanceId") or "",
+                    "workflowId": data.get("workflowId") or "",
+                    "projectKey": project_key,
+                })
+    out.sort(key=lambda x: x["startedAt"])
+    return out
+
+
+def _workflow_ts(value):
+    """解析 state.json 里的 ISO 时间戳（带 ±HH:MM 偏移），返回 epoch 毫秒。
+
+    单独一个函数而不复用 iso_to_ms：后者按 "...Z" 形态写的，而 workflow state 用的是
+    带偏移量的形态（实测 "2026-08-29T16:14:20+08:00"）。混用会静默返回 0，
+    表现是"这个节点永远不告警"。
+    """
+    if not isinstance(value, str) or not value:
+        return 0
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return iso_to_ms(value)      # 退回老解析器，兼容 Z 结尾
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return int(parsed.timestamp() * 1000)
+
+
+def check_workflow_node_stalled(human, group_id, sessions, cfg, now_ms,
+                                transcript, as_of_ms=None):
+    """功能 24：工作流节点开着但迟迟没人接 → ALERT_WORKFLOW_NODE_STALLED。
+
+    判据（五条全中才报）：
+      1. 只在生产实时（as_of_ms is None）生效。state.json 是"当下"快照，回放历史
+         时刻时是未来数据 —— 和步骤 0.5 结项闸门、信号 1/2 仲裁同一条保真度边界。
+      2. 有 status=open 的实例，且里面有 status=open 的 execution。
+      3. **球不在用户脚下**：最后一次对客不是澄清/确认类，或者用户已经答过了。
+         等用户确认期间节点必然一直挂着 open，此时报"没人接手"是把责任推给用户。
+         详见下面 is_awaiting_user 那段。
+      4. 该 execution 距开始超过 WORKFLOW_NODE_STALLED_MS，**且群最近还活跃**
+         （复用功能 23 的 SUB_RUN_FAILED_ACTIVE_MS 口径）。少了后半条就是那个
+         同事脚本的形态：本机 6 个 open execution 全部超阈值、全量告警。
+      5. **会话层看不到这个节点的执行者在动**：它既不在 dispatchTo 里（没派活
+         记录）、也没有回报记录。这一条是本判据存在的理由 —— 派出去了正常在跑的，
+         归铁律一管；跑失败的归功能 23 管；这里只兜"编排层开着、会话层完全没动静"。
+
+    第 5 条同时是**去重机制**：正常派活的节点会被它挡住，所以这个告警不会和
+    铁律一/功能 23 对同一件事重复报。
+
+    ## 判据 3（球在用户脚下）为什么必须有
+
+    形态：派发成功了，基础 Agent 也接了，但它向用户提了个澄清/确认问题，然后**在等
+    用户回答**。这时候：
+      · state.json 里那个 execution 一直是 open（等确认期间节点不会关）；
+      · 会话层看不到"这个执行者在动"—— 判据 5 的两个信号（dispatchTo / recvFrom）
+        都是**数字人视角**的记录，而基础 Agent 直接对客不经过数字人消息流；
+      · 等用户确认动辄几小时、甚至跨夜，60 分钟阈值必然过。
+    三条一叠，判据 1/2/4/5 全部通过 → 误报。而且这个形态对功能 24 比对
+    REMIND_LONG_RUNNING **更容易命中**（后者至少要求运行态判成 running）。
+
+    is_awaiting_user() 是早就有的守卫（REMIND 和"正在干啥"文案都在用），
+    2026-09-09 补进本判据。它要求两个条件同时成立：最后一次成功对客的类型是
+    clarification / confirmation，**且**发生在用户最后一次发言之后 —— 第二个守卫
+    保证用户答完之后判据会自动放开，不会永久闭嘴。
+
+    ⚠️ 这道门挡住的是"已经问到用户脸上了"，不是"基础 Agent 自己卡住了"。后者
+    （基础 Agent 接了活但一直不吭声）仍然会报，因为那时 lastSendType 不是澄清类。
+    """
+    if as_of_ms is not None:
+        return None                       # 回放时不判，见判据 1
+    open_nodes = read_workflow_open_nodes(group_id, human.get("daId"), now_ms)
+    if not open_nodes:
+        return None
+
+    # 判据 3：球在用户脚下 —— 问题已经抛给用户，节点开着是等确认，不是没人接手。
+    # 放在最前面（紧跟"有没有 open 节点"）：它是整条判据里最强的豁免，且纯内存计算。
+    if is_awaiting_user(transcript):
+        return None
+
+    # 群最近还有人在等吗（判据 4 后半条）
+    group_active = max((s.get("activityTs") or 0 for s in sessions), default=0)
+    if not group_active or now_ms - group_active > SUB_RUN_FAILED_ACTIVE_MS:
+        return None
+
+    stalled = threshold(cfg, "WORKFLOW_NODE_STALLED_MS")
+    dispatched = transcript.get("dispatchTo") or {}
+    received = transcript.get("recvFrom") or {}
+    executor_of = workflow_executors(human)
+
+    for node in open_nodes:
+        if now_ms - node["startedAt"] <= stalled:
+            continue
+        executor = executor_of.get(node["node"], "")
+        # 判据 5：会话层有这个执行者的动静就不报（那是别的告警的辖区）
+        if executor and (dispatched.get(executor) or received.get(executor)):
+            continue
+        names = human.get("agentNames") or {}
+        da = next((s for s in sessions if s["role"] == "数字人"), None)
+        if da is None:
+            return None
+        da_name = names.get(human["daId"], human["daId"])
+        who = names.get(executor, executor) if executor else "执行者"
+        waited = now_ms - node["startedAt"]
+        return {
+            "type": "ALERT_WORKFLOW_NODE_STALLED",
+            "severity": "ALERT",
+            "daId": human["daId"],
+            "groupId": group_id,
+            "sessionKey": da["sessionKey"],
+            "channel": da["channel"],
+            "target": da["target"],
+            "text": (f"⚠️ {da_name} 的工作流节点「{node['node']}」已开启 "
+                     f"{fmt_duration(waited)}，但{who}一直没有接手。"
+                     f"\n　　{recovery_hint(cfg)}"),
+            "detail": {
+                "gate": {"key": "WORKFLOW_NODE_STALLED_MS", "measured": waited},
+                "node": node["node"],
+                "executionId": node["executionId"],
+                "executor": executor,
+                "instanceId": node["instanceId"],
+                "workflowId": node["workflowId"],
+                "projectKey": node["projectKey"],
+                "startedAt": node["startedAt"],
+                "waitedMs": waited,
+                "groupActiveAt": group_active,
+            },
+        }
+    return None
+
+
+def workflow_executors(human):
+    """{节点 id: 执行者 agentId}，读该数字人 workflow/ 目录下的工作流定义。
+
+    只读一次目录：一个数字人的工作流定义就那么几个文件，且节点 id 在各定义之间
+    不冲突（实测 zqjz-full-delivery 和 zqjz-delivery-clarify-standalone 的同名节点
+    executor 一致）。读不到就返回空字典，判据 4 会退化成"不看执行者"—— 那样只会
+    更保守（更容易被别的告警的辖区判定挡住），不会误报。
+    """
+    out = {}
+    wf_dir = os.path.join(human.get("instDir") or "", "private-experts",
+                          human.get("daId") or "", "workflow")
+    for pattern in DELIVERY_WORKFLOW_PATTERNS:
+        for path in glob.glob(os.path.join(wf_dir, pattern)):
+            if not path.endswith(".json"):
+                continue        # yaml 定义要额外依赖，用不到就不引入
+            data = json_object_from_file(path) or {}
+            for node in (data.get("nodes") or []):
+                if not isinstance(node, dict):
+                    continue
+                node_id = node.get("id")
+                executor = node.get("executor")
+                if node_id and executor and node_id not in out:
+                    out[node_id] = executor
+    return out
 
 
 def check_sub_run_failed(human, group_id, sessions, cfg, now_ms, as_of_ms=None):
@@ -2724,6 +3056,10 @@ def wake_message_for(event):
         "ALERT_SUB_RUN_FAILED":
             f"你派给 {detail.get('sub', '基础 Agent')} 的那次执行异常中断且未恢复，"
             f"请只处理这一项",
+        "ALERT_WORKFLOW_NODE_STALLED":
+            f"工作流节点「{detail.get('node', '?')}」开着但一直没人接手"
+            f"（执行者 {detail.get('executor') or '未知'}），"
+            f"请只确认这一个节点的派发是否落地",
     }.get(event["type"], "当前会话有异常，请只检查当前这一轮的状态")
     return f"{WAKE_MESSAGE_PREFIX} {reason}。"
 
@@ -3147,21 +3483,61 @@ def check_sub_not_reported(human, group_id, sessions, cfg, now_ms, transcript):
 
     status 的读取走 sub_status_by_agent()（只认 group-virtual），原因见那个函数 ——
     同名两条会话会互相覆盖，误取空壳会把长宽限降成短宽限，正常派活变误报。
+
+    ## 短宽限的第二道前提：数字人本体也得"确实闲着"（2026-09-08 线上误报）
+
+    只看 sub 的 status 不够。实测（群 10233655387，22:37:25）：22:31:38 派活给魏征，
+    魏征 22:31:38~22:36:55 一直在跑、22:36:55 那轮 run 正常结束但**没来得及发回报**，
+    22:37:25 巡检器就报了"派活后没回报"—— 那一刻魏征 status=done（刚结束 30 秒）、
+    数字人本体 status 也是 done（在等定时调度），于是走了 90 秒短宽限。
+
+    判定链条本身自洽，但结论是错的：魏征只是"刚跑完、回报还在路上"，不是卡死。
+    所以短宽限现在要求**两边都闲**：sub 不在 running，**且**数字人本体近期也没动静。
+    数字人还在推进（刚对客过、刚收到别的回报、会话刚活动过）就说明交付在动，
+    这时候用 90 秒去卡一个 sub 太急，退回长宽限。
+
+    ⚠️ 兜底没有被削弱：数字人本体也杳无音讯时照旧走短宽限，真卡死仍然报得出来。
+    这里换的只是"90 秒 vs 10 分钟"，不是"报 vs 不报"。
     """
     names = human.get("agentNames") or {}
     status_of = sub_status_by_agent(sessions)
     long_lag = threshold(cfg, "SUB_REPORT_LAG_MS")
     done_lag = threshold(cfg, "SUB_DONE_LAG_MS")
+
+    # 数字人本体近期有没有动静。三个信号取最晚：会话活动时间戳、最近一次对客、
+    # 最近一次收到任何基础 Agent 的回报 —— 和 progress_anchor 同一套"有进展"口径，
+    # 只是这里不含 tUser（用户说话不代表数字人在推进，它可能压根没接上）。
+    #
+    # ⚠️ activityTs 来自 sessions.json 快照，回放历史时刻时它是**未来数据**
+    # （实测回放 09-08 21:41 时读到的是 09-09 13:00 的活动时间），会让 da_working
+    # 恒为真、回放里永远走长宽限。所以晚于 now_ms 的一律丢掉 —— 生产实时跑时
+    # activityTs 必然 ≤ now_ms，这个裁剪不影响它。
+    # 这是 MEMORY 里那条"只在生产实时生效的保真度边界"的同一种情况，只是这里用
+    # 裁剪而不是 as_of_ms 开关：本函数拿不到 as_of_ms，而裁剪本身就足够表达语义。
+    da_session = next((s for s in sessions if s["role"] == "数字人"), None)
+    da_activity = (da_session or {}).get("activityTs") or 0
+    if da_activity > now_ms:
+        da_activity = 0
+    da_last_active = max(da_activity,
+                         transcript.get("tDaReply") or 0,
+                         transcript.get("tSubReport") or 0)
+    # 窗口取长宽限同一个值：语义一致（"这个尺度内有动静就算还在推进"），
+    # 也免得再引入一个需要单独标定的阈值。
+    da_working = bool(da_last_active) and (now_ms - da_last_active) <= long_lag
+
     stale = []
     for sub, dispatched_at in (transcript["dispatchTo"] or {}).items():
         received_at = (transcript["recvFrom"] or {}).get(sub, 0)
         if received_at > dispatched_at:
             continue                       # 派活之后收到过回报，正常
+        if sub == human.get("daId"):
+            continue                       # 自派（数字人发给自己）不存在等回报
         still_working = status_of.get(sub) == "running"
-        lag = long_lag if still_working else done_lag
+        # 短宽限要求 sub 和数字人本体都闲着，理由见 docstring
+        lag = long_lag if (still_working or da_working) else done_lag
         if now_ms - dispatched_at <= lag:
             continue                       # 还在宽限期内
-        stale.append((sub, dispatched_at, still_working))
+        stale.append((sub, dispatched_at, still_working or da_working))
     if not stale:
         return None
 
@@ -3173,25 +3549,39 @@ def check_sub_not_reported(human, group_id, sessions, cfg, now_ms, transcript):
     oldest = stale[0][1]
     da_name = names.get(human["daId"], human["daId"])
 
-    # 文案的数字从"这个 sub 最近一次回报"算，闸门仍从派活时刻算（2026-09-04）。
+    # 文案的主数字 = now − max(本次派活, 该 sub 上次回报)，即**这一单活自己的
+    # 最后一次进展**（2026-09-09 修正）。
     #
-    # 两把尺子是**故意**的，各管各的事：
-    #   闸门 = now − 派活时刻。SUB_REPORT_LAG_MS=90s / SUB_DONE_LAG_MS 是拿真实
-    #          "派活→回报"滞后分布标定的（两个群 64 次派活：中位 15s、P90 80s、
-    #          最大 333s）。换锚点等于把阈值语义整个换掉，告警会显著提前。
-    #   文案 = now − 上次回报。用户要看的是"距最后一次有进展过去了多久"，
-    #          和 REMIND 同源，同一件事在两条消息里数字能对上。
-    # 因为 stale 的成立条件就是"派活之后没再回报"，上次回报必然早于派活，
-    # 所以文案数字恒 ≥ 闸门数字，不会出现"文案说才 1 分钟却报警了"的自相矛盾。
+    # ## 为什么不是"上次回报"
     #
-    # 从来没回报过的 sub（recvFrom 里没有它）没有"上次回报"可言，退回派活起算，
-    # 措辞也跟着换 —— 不能对着一个从未回报过的 Agent 说"自上次回报已 X"。
+    # 上一版写的是 now − 上次回报，线上打出来是"自上次回报已 2.7 小时"。这个数字
+    # **虚高**：stale 的成立条件就是"派活之后没再回报"，所以上次回报必然早于本次派活，
+    # 拿它起算等于把"派活之前那段时间"也算进了"这一单活等了多久"。
+    # 本机实测 4 处这种偏差，最大的一处虚高 374 分钟
+    # （群 10233261132 沈括：派活 08-29 17:07、上次回报 08-29 10:53）。
+    #
+    # ## 为什么不用 REMIND 那个群级 progress_anchor
+    #
+    # progress_anchor 含 tDaReply / tSubReport（数字人对客、任一 sub 回报），它们
+    # 可能**晚于本次派活**——那是"这个群有进展"，不是"这一单活有进展"。套进来会让
+    # 文案数字**小于**闸门数字，出现"才等了一会儿却报警了"的自相矛盾。
+    # 实测本机那 4 处全部命中：群级锚点比派活时刻晚 16 / 4310 / 1138 / 116 分钟。
+    #
+    # 所以这里只取**这一单活自己的两个时刻**。又因为 stale 时上次回报恒早于派活，
+    # max 的结果实际就是派活时刻 —— 于是文案数字和闸门数字**恒等**，两把尺子归一，
+    # 这正是上一版想要而没做到的。
+    #
+    # 上次回报另外用括号补一句（用户要求）：它回答的是"这个 sub 上一次给过反馈是多久
+    # 以前"，和主数字答的不是同一个问题，两个都有用。
     last_report = (transcript["recvFrom"] or {}).get(stale[0][0], 0)
+    progress_at = max(oldest, last_report)
+    since_ms = now_ms - progress_at
     if last_report:
-        since_ms = now_ms - last_report
-        waited_text = f"，自上次回报已 {fmt_duration(since_ms)}"
+        waited_text = (f"，自派活后已 {fmt_duration(since_ms)}没有进展"
+                       f"（{names.get(stale[0][0], stale[0][0])}"
+                       f"上次回报在 {fmt_duration(now_ms - last_report)}前）")
     else:
-        since_ms = now_ms - oldest
+        # 从来没回报过的 sub 没有"上次回报"可言，不能对它说"上次回报在 X 前"
         waited_text = f"，但 {fmt_duration(since_ms)}没有收到回报"
     return {
         "type": "ALERT_SUB_NOT_REPORTED",
@@ -3213,10 +3603,14 @@ def check_sub_not_reported(human, group_id, sessions, cfg, now_ms, transcript):
             "recvFrom": dict(transcript["recvFrom"] or {}),
             "subStatus": {sub: status_of.get(sub) for sub, _, _ in stale},
             "lagMs": now_ms - oldest,
-            # 文案里那个数字和它的起点。和 lagMs 分开记：排查时要能一眼看出
-            # "闸门量的是 15min、用户看到的是 45min"，两个都得在。
+            # 文案主数字的起点与值。统一锚点后 progressAt == tDispatch、
+            # sinceProgressMs == gate.measured（stale 时上次回报恒早于派活），
+            # 但仍分开记：排查时"闸门量的和用户看到的是不是同一个数"要一眼可验。
             "tLastReport": last_report,
-            "sinceLastReportMs": since_ms,
+            "progressAt": progress_at,
+            "sinceProgressMs": since_ms,
+            # 括号里那句用的值：这个 sub 上一次给过反馈是多久以前
+            "sinceLastReportMs": (now_ms - last_report) if last_report else 0,
         },
     }
 
