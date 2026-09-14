@@ -62,6 +62,7 @@ import json
 import os
 import re
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -621,55 +622,154 @@ def activity_ts(entry):
     return max(candidates) if candidates else 0
 
 
-def read_sessions(sessions_json):
-    """读一个 agent 的 sessions.json，返回 {sessionKey: entry}。读不了就返回空。"""
-    data = json_object_from_file(sessions_json)
-    if data is None:
-        return {}
-    return {k: v for k, v in data.items() if isinstance(v, dict)}
+def read_sessions(db_path):
+    """读一个 agent 的会话库，返回 {sessionKey: entry}。读不了就返回空。
+
+    entry 就是旧 sessions.json 里那个 entry（`session_nodes.entry_json` 逐字同构），
+    额外补两个只有新布局才有的字段：
+
+      _sessionId  session_nodes.current_session_id —— 事件表按它关联，比 entry_json
+                  里的 sessionId 更权威（后者是快照，重开会话时可能滞后）
+      _dbPath     这个会话所在的库，取事件时要用
+
+    下划线前缀表示"不是 openclaw 写的字段，是巡检器自己贴的"，免得和 entry 里的
+    真实字段混淆。
+    """
+    rows = _query(
+        db_path,
+        "SELECT session_key, current_session_id, entry_json, status FROM session_nodes",
+    )
+    out = {}
+    for session_key, current_session_id, entry_json, status in rows:
+        if not isinstance(session_key, str) or not session_key:
+            continue
+        entry = json_object(entry_json) or {}
+        if not isinstance(entry, dict):
+            continue
+        # session_nodes.status 是独立的一列，且比 entry_json 里那份更新得更勤
+        # （entry_json 是整体快照）。列里有值就用列的。
+        if isinstance(status, str) and status:
+            entry = {**entry, "status": status}
+        entry["_sessionId"] = current_session_id or entry.get("sessionId") or ""
+        entry["_dbPath"] = db_path
+        out[session_key] = entry
+    return out
+
+
+def agent_db_paths(inst_dir):
+    """这个实例下每个 agent 的会话库：{agentId: dbPath}，按 agentId 排序遍历。"""
+    out = {}
+    pattern = os.path.join(inst_dir, "agents", "*", AGENT_DB_RELPATH)
+    for db_path in sorted(glob.glob(pattern)):
+        # .../agents/<agentId>/agent/openclaw-agent.sqlite → 往上第 3 层是 agentId
+        agent_id = db_path.split(os.sep)[-3]
+        if agent_id:
+            out[agent_id] = db_path
+    return out
+
+
+def delivery_route(entry):
+    """从一条 session entry 里解出发消息要用的 (channel, target)，取不到给空串。
+
+    ⚠️ **这里是 SQLite 迁移唯一没能"逐字同构"的地方**（2026-09-14 线上炸出来的）。
+    换数据层时核对过 entry_json 和旧 entry 一致，但**只核了判据用的字段** ——
+    路由这几个恰好被 openclaw 重构了，整个搬进了嵌套的 `delivery`：
+
+        旧：entry.lastTo                        = "jingme:dw.zqjz.ts1:group:102339…"
+            entry.channel / entry.lastChannel   = "jingme"
+            entry.route.target.to               （少数实例才有）
+
+        新：entry.delivery.route.target.to      = "jingme:dw.zqjz.ts1:group:102339…"
+            entry.delivery.route.channel        = "jingme"
+            entry.delivery.context.to / .channel（同值，多一层兜底）
+
+    新布局里 lastTo / channel / lastChannel / route **一个都不存在**，所以旧实现
+    两个字段一起返回空串。失效形态特别隐蔽：判定链路根本不读它们，于是 REMIND
+    判对了、闸门放行了、话也组好了，只在最后 send_group_message() 那一步被
+    "事件里没有投递目标"拦下 —— 日志还是 INFO 级，看着像信息其实是"一条都发不出去"。
+
+    旧字段排在前面、delivery 作为回退：`lastTo` 的语义是"最近一次**实际**投递的
+    目标"，比 `delivery.route.target.to` 这个配置态更精确；而对已经迁走的实例，
+    旧字段必然缺失、自然落到 delivery。本机这个群两条路的值一致。
+
+    ⚠️ `delivery.origin.to` 看着也是同一个值，但**刻意不采**：origin 记的是"这条
+    消息从哪来"，同一条记录里它还带着 `from: "…:group:yangfeiyu"`（发消息的人）。
+    拿来源当去向，在群会话里恰好相等，私聊或转发场景就会把话发错人。
+    """
+    if not isinstance(entry, dict):
+        return "", ""
+    delivery = entry.get("delivery") or {}
+    d_route = delivery.get("route") or {}
+    d_ctx = delivery.get("context") or {}
+    channel = (entry.get("channel") or entry.get("lastChannel")
+               or d_route.get("channel") or d_ctx.get("channel") or "")
+    target = (entry.get("lastTo")
+              or ((entry.get("route") or {}).get("target") or {}).get("to")
+              or (d_route.get("target") or {}).get("to")
+              or d_ctx.get("to") or "")
+    return channel, target
 
 
 def collect_group_sessions(inst_dir, da_id):
-    """读一个数字人实例下所有 agent 的 sessions.json，按群号归拢成 {群号: [会话]}。
+    """读一个数字人实例下所有 agent 的会话库，按群号归拢成 {群号: [会话]}。
 
     单独抽出来，是为了让"发送前复查"能重新读一次盘 —— 复查必须和判定用同一份新鲜
     数据、同一把尺子，详见 still_relevant() 的注释。
     """
     groups = {}
-    pattern = os.path.join(inst_dir, "agents", "*", "sessions", "sessions.json")
-    for sessions_json in sorted(glob.glob(pattern)):
-        agent_id = sessions_json.split(os.sep)[-3]
+    for agent_id, db_path in agent_db_paths(inst_dir).items():
         role = "数字人" if agent_id == da_id else "基础Agent"
-        for session_key, entry in read_sessions(sessions_json).items():
+        for session_key, entry in read_sessions(db_path).items():
             group_id = parse_group_id(session_key)
             if group_id is None:
                 continue  # 私聊等非群会话，本方案不巡检
+            channel, target = delivery_route(entry)
             groups.setdefault(group_id, []).append({
                 "agentId": agent_id,
                 "role": role,
                 "sessionKey": session_key,
-                "sessionId": entry.get("sessionId") or "",
+                # 取 current_session_id（read_sessions 贴的 _sessionId），不取
+                # entry_json 里的 sessionId —— 后者是快照，重开会话时可能滞后，
+                # 而事件表是按 current_session_id 关联的。
+                "sessionId": entry.get("_sessionId") or entry.get("sessionId") or "",
                 "status": entry.get("status"),
                 "activityTs": activity_ts(entry),
                 # 网关侧记的"最后一次跟用户交互"。它和消息流里的 tUser 正常只差 0~1 秒
                 # （实测 4 个群都是 -1~0 秒）；差很多就说明网关收到了消息、但它没进会话，
                 # 是"消息被吞"的可判定信号。
                 "lastInteractionAt": entry.get("lastInteractionAt") or 0,
-                "sessionFile": entry.get("sessionFile") or "",
+                # 旧布局这里是 sessionFile（<sid>.jsonl 的路径）。SQLite 布局下消息流
+                # 不再是文件，会话身份换成 (dbPath, sessionId) 这个二元组：
+                # 取消息流 → transcript_events，取 trajectory → trajectory_runtime_events，
+                # 两张表都在 dbPath 这个库里、都按 sessionId 过滤。
+                "dbPath": entry.get("_dbPath") or "",
                 "startedAt": entry.get("startedAt") or 0,
-                # 发消息要用的路由信息。lastTo 是最近一次实际投递的目标，
-                # 没有就退回 route.target.to。
-                "channel": entry.get("channel") or entry.get("lastChannel") or "",
-                "target": entry.get("lastTo")
-                          or ((entry.get("route") or {}).get("target") or {}).get("to")
-                          or "",
+                # 发消息要用的路由信息，见 delivery_route()。
+                # ⚠️ 这两个字段只在"真发消息"那一步用到，判定链路完全不碰它们 ——
+                # 所以它们空掉的表现是"判定全对、最后投递不出去"，很容易看漏。
+                "channel": channel,
+                "target": target,
                 # 空壳会话：建过但从没跑过（没有 startedAt/status）。
                 # 它没有任何运行痕迹，后面的判定必须跳过，否则会被当成异常。
                 "isStub": entry.get("startedAt") is None and entry.get("status") is None,
             })
-    # 每个群内按最近活动排序，数字人本体排在最前，方便阅读。
+    # 每个群内排序：数字人本体最前 → 真会话优先于空壳 → 再按最近活动。
+    #
+    # ⚠️ **这个顺序不只影响阅读，它决定下游取哪条会话** —— 十几处判定和整个发送链路
+    # 都是 `next(s for s in sessions if s["role"] == "数字人")`，即"取第一条"。
+    #
+    # isStub 这一级是 2026-09-14 补的。本机同一个群里出现了两条数字人本体会话：
+    #     agent:zqjzszr:jingme:group:10233933793                    真会话，te=65 tr=51
+    #     agent:zqjzszr:jingme:group:dw.zqjz.ts1:group:10233933793  空壳，te=2 tr=0
+    # parse_group_id 对两者都解出 10233933793，所以它们落进同一个群；而那条空壳的
+    # target 前缀是 `channel:` 而不是 `jingme:` —— 取错就是拿一个错的投递目标发消息。
+    # 实测当时真会话只靠 activityTs 领先 16 秒，纯属偶然：把空壳顶新即复现取错
+    # （MEMORY 第 7 件事记过同一个坑 —— 空壳被网关碰过反而更新）。
+    #
+    # 排在 activityTs 之前而不是之后：空壳按定义没有任何运行痕迹，它的活动时刻
+    # 再新也不代表这个群在动，不该有机会赢过真会话。
     for sessions in groups.values():
-        sessions.sort(key=lambda s: (s["role"] != "数字人", -s["activityTs"]))
+        sessions.sort(key=lambda s: (s["role"] != "数字人", s["isStub"], -s["activityTs"]))
     return groups
 
 
@@ -866,33 +966,108 @@ RUN_MARKERS = ("session.started", "session.ended")
 
 # 倒着扫 trajectory 的字节上限。正常情况下读 1~5 行就能出结论，这个上限只是兜底，
 # 防止遇到异常文件把内存和时间吃光。
-TRAJECTORY_SCAN_LIMIT = 2 * 1024 * 1024
+# 旧实现是字节上限（trajectory 2MB / 消息流 8MB）。SQLite 布局下按行取，
+# 所以换成"最多回溯多少条事件"，语义更直白，见 EVENT_SCAN_LIMIT。
+# 两个名字保留下来是为了让调用方签名不变，值统一指向条数上限。
+TRAJECTORY_SCAN_LIMIT = 1000
 
 
-def iter_lines_reverse(path, max_bytes=TRAJECTORY_SCAN_LIMIT, chunk_size=64 * 1024):
-    """从文件尾部往前逐行读，yield (整行 bytes, 已扫描字节数)。
+# ===================== 数据层：会话都在 SQLite 里（openclaw >= 2026.9.2）=====================
+#
+# 2026-09-12 起 openclaw 把会话存储从 JSON 文件搬进了每个 agent 自己的 SQLite 库：
+#
+#   旧：agents/<agent>/sessions/sessions.json          每个会话一个 entry
+#       agents/<agent>/sessions/<sid>.jsonl            消息流，逐行 JSON
+#       agents/<agent>/sessions/<sid>.trajectory.jsonl run 边界与错误详情
+#
+#   新：agents/<agent>/agent/openclaw-agent.sqlite
+#         session_nodes             (session_key PK, current_session_id, entry_json, status…)
+#         transcript_events         (session_id, seq, event_json)          ← 消息流
+#         trajectory_runtime_events (session_id, seq, run_id, event_json)  ← trajectory
+#
+# **三处的记录格式逐字同构**：`entry_json` 解出来就是旧的 entry；两张事件表的
+# `event_json` 解出来就是旧 jsonl 的一行。所以判据逻辑一行都不用改，只换取数据的方式。
+#
+# 唯一消失的概念是 `sessionFile`（消息流不再是文件）。它在旧实现里同时承担两件事：
+# "消息流在哪"和"会话身份"。现在换成 (dbPath, sessionId) 这个二元组，见
+# collect_group_sessions 里的 sessionRef。
+#
+# 倒序读也变简单了：以前要从文件尾部分块往前扒、还得兜一个字节上限防止单行 150KB
+# 把内存吃光；现在 `ORDER BY seq DESC LIMIT n` 就是倒序，`seq` 本身有索引。
+# 字节上限的语义换成"最多回溯多少条事件"（EVENT_SCAN_LIMIT），语义更直白。
 
-    为什么不用"读尾部固定 N 字节"：trajectory 单行能到 150KB，固定窗口很可能一行都
-    截不全，或者截到的几行里既没有 session.started 也没有 session.ended，判不出运行态。
-    倒着读、找到答案就停，正常只读 1~5 行。
+# 每个 agent 的会话库相对 agent 目录的位置
+AGENT_DB_RELPATH = os.path.join("agent", "openclaw-agent.sqlite")
+
+# 倒序回溯的事件条数上限。旧实现是字节上限（trajectory 2MB / 消息流 8MB），
+# 换成条数是因为 SQL 本来就按行取，而且"回溯多少条"比"读多少字节"更能对应
+# "往回看多久的历史"这个真实意图。
+#
+# 1000 条这个值是拿真实会话量出来的，不是拍的。取 37 个能凑齐全部判定字段的
+# 真实会话，统计"倒序要读到第几条才凑齐"：
+#     中位 27 条、P90 106 条、最大 208 条
+# （最费的那个会话共 1348 行，只需回溯 208 条就够）。1000 条是最大值的 ~5 倍余量。
+#
+# ⚠️ 这个上限**不该给得太大**。它同时是一道降噪闸门：判据要的都是"最后一次"，
+# 回溯得越深越容易捞到很久以前的历史痕迹当成当前状态 —— 那正是 2026-09-03 那次
+# 重复告警的根因（8MB 上限让它一路往回捞到几小时前的旧错误）。上限小一点，
+# "陈旧状态被反复读取"这个体质问题的暴露面也小一点。
+EVENT_SCAN_LIMIT = 1000
+
+
+def _connect_ro(db_path):
+    """只读打开 SQLite。打不开返回 None（不抛），让调用方按"读不到"处理。
+
+    ⚠️ 必须只读 + immutable=0：巡检器是纯观察者，绝不能因为自己去读而在别人的库上
+    留下 -wal/-shm 变更或拿写锁。用 file: URI 的 mode=ro 而不是 immutable=1 ——
+    后者假设文件不会变，而这些库正被 openclaw 持续写入，用 immutable 会读到过期快照。
     """
-    with open(path, "rb") as f:
-        f.seek(0, os.SEEK_END)
-        pos = f.tell()
-        pending = b""   # 上一轮切剩的、可能不完整的第一行
-        scanned = 0
-        while pos > 0 and scanned < max_bytes:
-            step = min(chunk_size, pos)
-            pos -= step
-            f.seek(pos)
-            scanned += step
-            parts = (f.read(step) + pending).split(b"\n")
-            pending = parts[0]        # 它的开头还在更前面，留到下一轮
-            for raw in reversed(parts[1:]):
-                if raw.strip():
-                    yield raw, scanned
-        if pos == 0 and pending.strip():
-            yield pending, scanned
+    try:
+        return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+    except sqlite3.Error:
+        return None
+
+
+def _query(db_path, sql, params=()):
+    """在只读连接上跑一条查询，返回行列表。任何异常都返回空列表。
+
+    库结构不符合预期（openclaw 又改了 schema）时，这里静默返回空 —— 和旧实现
+    "文件读不到就当空"保持同一种失败姿态：判定会因为拿不到数据而走 unknown 分支，
+    本轮什么都不做，不会误报。
+    """
+    conn = _connect_ro(db_path)
+    if conn is None:
+        return []
+    try:
+        return conn.execute(sql, params).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def iter_events_reverse(db_path, table, session_id, limit=EVENT_SCAN_LIMIT):
+    """倒序读某个会话的事件，yield (event_json 字符串, 已读条数)。
+
+    对应旧实现的 iter_lines_reverse：调用方一样是"倒序遍历、找到答案就停"，
+    所以这里用 LIMIT 一次取回上限条数、在 Python 侧逐条 yield —— 调用方 break 之后
+    剩下的行不会被解析（json 解析才是真正的开销，SQL 取行很便宜）。
+
+    table 只允许两个白名单值，避免把外部输入拼进 SQL。
+    """
+    if table not in ("transcript_events", "trajectory_runtime_events"):
+        return
+    if not db_path or not session_id:
+        return
+    rows = _query(
+        db_path,
+        f"SELECT event_json FROM {table} WHERE session_id = ? ORDER BY seq DESC LIMIT ?",
+        (session_id, int(limit)),
+    )
+    for i, row in enumerate(rows, 1):
+        raw = row[0]
+        if isinstance(raw, str) and raw.strip():
+            yield raw, i
 
 
 def iso_to_ms(s):
@@ -908,71 +1083,71 @@ def iso_to_ms(s):
         return 0
 
 
-def resolve_trajectory_file(session_file):
-    """由 <sid>.jsonl 找到对应的 trajectory 文件，找不到返回空串。"""
-    if not session_file.endswith(".jsonl"):
-        return ""
-    base = session_file[: -len(".jsonl")]
-    # 优先看指针文件：trajectory 有可能被放到别的位置，指针里的 runtimeFile 才是准的。
-    pointer = json_object_from_file(base + ".trajectory-path.json") or {}
-    runtime_file = pointer.get("runtimeFile")
-    if isinstance(runtime_file, str) and runtime_file and os.path.exists(runtime_file):
-        return runtime_file
-    direct = base + ".trajectory.jsonl"
-    return direct if os.path.exists(direct) else ""
+def session_ref(session):
+    """从一条会话记录里取出 (dbPath, sessionId)，任一为空说明这条会话取不到事件。
+
+    旧布局下这个角色是 `sessionFile`（一个路径字符串）。SQLite 布局下消息流和
+    trajectory 都在同一个库的两张表里，靠 sessionId 过滤，所以身份是个二元组。
+
+    ⚠️ 判定函数拿到空 ref 时必须走"读不到"的分支（运行态 unknown、本轮不做事），
+    不能当成"没在跑"—— 这条和旧实现"文件找不到就返回空串"是同一种失败姿态。
+    """
+    if not isinstance(session, dict):
+        return "", ""
+    return session.get("dbPath") or "", session.get("sessionId") or ""
 
 
-def latest_run_marker(traj_file, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMIT):
+def latest_run_marker(session, as_of_ms=None, scan_limit=EVENT_SCAN_LIMIT):
     """倒着扫 trajectory，找最近一次的 run 开始/结束标记。
+
+    session 是 collect_group_sessions 产出的一条会话记录（要用它的 dbPath+sessionId）。
 
     as_of_ms 不为 None 时忽略该时刻之后的事件，用来回溯"历史某一刻会怎么判"——
     没有会话正在运行时，这是唯一能验证"在跑"这条分支的办法。回溯要跨过之后所有
     事件才能到目标时刻，比生产用法费得多，所以 scan_limit 可以调大。
 
-    返回 {"marker": "session.started"/"session.ended"/None, "ts", "runId", "scannedBytes"}
+    返回 {"marker": "session.started"/"session.ended"/None, "ts", "runId", "scannedEvents"}
     marker 为 None 表示扫完（或扫到上限）都没找到标记 —— 运行态未知，不是"没在跑"。
     """
-    out = {"marker": None, "ts": 0, "runId": "", "scannedBytes": 0}
-    if not traj_file:
+    out = {"marker": None, "ts": 0, "runId": "", "scannedEvents": 0}
+    db_path, session_id = session_ref(session)
+    if not db_path or not session_id:
         return out
-    try:
-        for raw, scanned in iter_lines_reverse(traj_file, max_bytes=scan_limit):
-            out["scannedBytes"] = scanned
-            event = json_object(raw)
-            if event is None:
-                continue          # 半行/坏行/不是对象，跳过继续往前找
-            if event.get("type") not in RUN_MARKERS:
-                continue
-            ts = iso_to_ms(event.get("ts"))
-            if as_of_ms is not None and ts > as_of_ms:
-                continue
-            out.update(marker=event["type"], ts=ts, runId=event.get("runId") or "")
-            return out
-    except OSError:
-        pass
+    for raw, scanned in iter_events_reverse(db_path, "trajectory_runtime_events",
+                                            session_id, limit=scan_limit):
+        out["scannedEvents"] = scanned
+        event = json_object(raw)
+        if event is None:
+            continue          # 坏行/不是对象，跳过继续往前找
+        if event.get("type") not in RUN_MARKERS:
+            continue
+        ts = iso_to_ms(event.get("ts"))
+        if as_of_ms is not None and ts > as_of_ms:
+            continue
+        out.update(marker=event["type"], ts=ts, runId=event.get("runId") or "")
+        return out
     return out
 
 
-def latest_trajectory_event(traj_file, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMIT):
+def latest_trajectory_event(session, as_of_ms=None, scan_limit=EVENT_SCAN_LIMIT):
     """倒着扫 trajectory，返回最新一条事件的 type（任意类型），找不到返回空串。
 
     跟 latest_run_marker 的区别：那个只认 session.started/ended，用来判运行态；
     这个要的是"最新发生的是什么"，用来生成"正在干啥"的文案（比如最新是
     prompt.submitted 就说"正在思考中"）。
     """
-    if not traj_file:
+    db_path, session_id = session_ref(session)
+    if not db_path or not session_id:
         return ""
-    try:
-        for raw, _ in iter_lines_reverse(traj_file, max_bytes=scan_limit):
-            event = json_object(raw)
-            if event is None:
-                continue
-            ts = iso_to_ms(event.get("ts"))
-            if as_of_ms is not None and ts > as_of_ms:
-                continue
-            return event.get("type") or ""
-    except OSError:
-        pass
+    for raw, _ in iter_events_reverse(db_path, "trajectory_runtime_events",
+                                      session_id, limit=scan_limit):
+        event = json_object(raw)
+        if event is None:
+            continue
+        ts = iso_to_ms(event.get("ts"))
+        if as_of_ms is not None and ts > as_of_ms:
+            continue
+        return event.get("type") or ""
     return ""
 
 
@@ -1033,14 +1208,14 @@ def judge_running(sessions, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMIT, cc=
     if da is None:
         evidence.append("信号2 trajectory：无数字人会话，跳过")
     else:
-        traj = resolve_trajectory_file(da["sessionFile"])
-        if not traj:
-            evidence.append("信号2 trajectory：找不到 trajectory 文件 → 无结论")
+        db_path, session_id = session_ref(da)
+        if not db_path or not session_id:
+            evidence.append("信号2 trajectory：这条会话没有 dbPath/sessionId → 无结论")
         else:
-            mark = latest_run_marker(traj, as_of_ms, scan_limit)
+            mark = latest_run_marker(da, as_of_ms, scan_limit)
             if mark["marker"] is None:
                 evidence.append(
-                    f"信号2 trajectory：扫了 {mark['scannedBytes'] / 1024:.0f}KB"
+                    f"信号2 trajectory：回溯了 {mark['scannedEvents']} 条事件"
                     f" 没找到 run 标记 → 无结论"
                 )
             else:
@@ -1051,7 +1226,7 @@ def judge_running(sessions, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMIT, cc=
                     hits.append("信号2 trajectory 最新是 session.started（之后无 ended）")
                 evidence.append(
                     f"信号2 trajectory：最新标记 {mark['marker']} @ {fmt_ts(mark['ts'])}"
-                    f" run={mark['runId'][:8]}（读了 {mark['scannedBytes'] / 1024:.0f}KB）"
+                    f" run={mark['runId'][:8]}（回溯 {mark['scannedEvents']} 条事件）"
                 )
 
     # 信号 3：任一基础 Agent 在跑
@@ -1193,7 +1368,7 @@ def print_discovery(cfg=None):
 #                → 按 toolCallId 配到 role=toolResult / toolName=exec 的结果
 #                → 结果的 content[].text 是个字符串化 JSON，里面 ok=true 才算发出去了。
 
-TRANSCRIPT_SCAN_LIMIT = 8 * 1024 * 1024
+TRANSCRIPT_SCAN_LIMIT = 1000
 
 # assistant 最终文本是这些标记时，表示"明示不对客"，不算给用户回了话（方案 §4.2）。
 NO_REPLY_TOKENS = ("NO_REPLY", "ANNOUNCE_SKIP", "REPLY_SKIP")
@@ -1418,8 +1593,11 @@ AWAITING_USER_SEND_TYPES = ("clarification", "confirmation")
 OPENCLAW_MSG_META = "__openclaw"
 
 
-def scan_transcript(session_file, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMIT):
-    """倒着扫 <sid>.jsonl，采集判定要用的时间点。
+def scan_transcript(session, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMIT):
+    """倒着扫消息流（transcript_events 表），采集判定要用的时间点。
+
+    session 是 collect_group_sessions 产出的一条会话记录（要用它的 dbPath+sessionId）。
+    记录格式和旧的 <sid>.jsonl 逐行同构，所以下面的采集逻辑一行没改。
 
     倒着扫的好处：要找的都是"最后一次"，倒序遇到的第一个就是答案，凑齐就能停。
     顺带的顺序特性：toolResult 排在它的 toolCall 后面，倒序反而是先看到结果、
@@ -1435,7 +1613,7 @@ def scan_transcript(session_file, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMI
     —— 只要用户发过消息、8 秒后就提醒，完全不管数字人已经回过话了。用户因此连着
     收到"数字人自己的进度播报"+"巡检器的正在处理中"两条，正是降噪要避免的噪音。
 
-    返回 {"tUser","tDaSendOk","tDaText","tDaReply","lastToolCall","scannedBytes","capped"}
+    返回 {"tUser","tDaSendOk","tDaText","tDaReply","lastToolCall","scannedEvents","capped"}
       tDaSendOk  严格证据：send-user-message.py 且脚本回报已投递（三条铁律要用）
       tDaText    最后一条非 NO_REPLY 家族的 assistant 文本
       tDaReply   两者取晚 —— 静默判定用这个
@@ -1447,14 +1625,16 @@ def scan_transcript(session_file, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMI
            "tRuntime": 0,
            "lastSendType": "",
            "dispatchTo": {}, "recvFrom": {},
-           "lastToolCall": None, "scannedBytes": 0, "capped": False}
-    if not session_file or not os.path.exists(session_file):
+           "lastToolCall": None, "scannedEvents": 0, "capped": False}
+    db_path, session_id = session_ref(session)
+    if not db_path or not session_id:
         return out
 
     exec_results = {}     # toolCallId -> (是否成功, 结果落盘时刻)
-    try:
-        for raw, scanned in iter_lines_reverse(session_file, max_bytes=scan_limit):
-            out["scannedBytes"] = scanned
+    if True:
+        for raw, scanned in iter_events_reverse(db_path, "transcript_events",
+                                                session_id, limit=scan_limit):
+            out["scannedEvents"] = scanned
             row = json_object(raw)
             if row is None:
                 continue
@@ -1577,9 +1757,10 @@ def scan_transcript(session_file, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMI
             if out["tUser"] and out["tDaSendOk"] and out["tDaText"] and out["lastToolCall"]:
                 break            # 要的都齐了，不用再往前扫
         else:
-            out["capped"] = out["scannedBytes"] >= scan_limit
-    except OSError:
-        pass
+            # 没 break 说明把上限条数都回溯完了还没凑齐 —— 可能还有更早的历史没看到。
+            # 和旧实现的 capped（字节触顶）同一个语义：这个标记会让调用方知道
+            # "取到的时刻可能不是真正的最后一次"。
+            out["capped"] = out["scannedEvents"] >= scan_limit
     out["tDaReply"] = max(out["tDaSendOk"], out["tDaText"])
     # 各基础 Agent 最近一次回报里最晚的那个。recvFrom 是倒扫时"第一次遇到就记下"，
     # 所以每个 value 本身已经是该 sub 的最近一次，取 max 即全群最近一次回报。
@@ -1886,7 +2067,7 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
     # 消息流两个分支都要用，在这里扫一次就好。它是实时写入的（trajectory 不是），
     # 所以中断告警也得看它，不能只看 trajectory。
     limit = scan_limit or TRANSCRIPT_SCAN_LIMIT
-    transcript = scan_transcript(da["sessionFile"] if da else "", as_of_ms, limit)
+    transcript = scan_transcript(da, as_of_ms, limit)
     transcript["cc"] = cc
     trace.append(
         f"消息流：T_user={fmt_ts(transcript['tUser'])}"
@@ -1894,14 +2075,13 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
         f"　T_da_text={fmt_ts(transcript['tDaText'])}"
         f"　T_model_error={fmt_ts(transcript['tModelError'])}"
         f"　最后对客类型={transcript['lastSendType'] or '(无)'}"
-        f"（读了 {transcript['scannedBytes'] / 1024:.0f}KB"
+        f"（回溯 {transcript['scannedEvents']} 条事件"
         f"{'，已触顶' if transcript['capped'] else ''}）"
     )
 
     if verdict["state"] == STATE_IDLE:
         trace.append("→ 空闲，进入中断告警判定")
-        traj = resolve_trajectory_file(da["sessionFile"]) if da else ""
-        outcome = latest_run_outcome(traj, as_of_ms, scan_limit or TRAJECTORY_SCAN_LIMIT)
+        outcome = latest_run_outcome(da, as_of_ms, scan_limit or TRAJECTORY_SCAN_LIMIT)
         trace.append(
             f"　A 模型异常：消息流 errorMessage={transcript['modelErrorMessage'] or '(无)'}"
             f"　trajectory run={(outcome['runId'] or '?')[:8]}"
@@ -2009,8 +2189,7 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
 
     # running：走步骤 F
     latest_event = latest_trajectory_event(
-        resolve_trajectory_file(da["sessionFile"]) if da else "", as_of_ms,
-        scan_limit or TRAJECTORY_SCAN_LIMIT)
+        da, as_of_ms, scan_limit or TRAJECTORY_SCAN_LIMIT)
     trace.append(f"trajectory 最新事件：{latest_event or '(取不到)'}")
 
     # "当前这次 run 的开始时间"，用于文案里的"已运行多久"：
@@ -2464,7 +2643,7 @@ def still_relevant(human, group_id, sessions, event, cfg, now_ms):
     现在改为重新读盘 + 重跑 judge_running，两边口径一致。
     """
     da = next((s for s in sessions if s["role"] == "数字人"), None)
-    if da is None or not da["sessionFile"]:
+    if da is None or not all(session_ref(da)):
         return True, ""
     detail = event.get("detail") or {}
 
@@ -2472,7 +2651,6 @@ def still_relevant(human, group_id, sessions, event, cfg, now_ms):
     fresh_groups = collect_group_sessions(human["instDir"], human["daId"])
     fresh_sessions = fresh_groups.get(group_id) or sessions
     fresh_da = next((s for s in fresh_sessions if s["role"] == "数字人"), da)
-    traj = resolve_trajectory_file(fresh_da["sessionFile"])
 
     if event["type"] == "REMIND_LONG_RUNNING":
         # 1) 用和判定完全相同的口径重新判一次运行态
@@ -2483,7 +2661,7 @@ def still_relevant(human, group_id, sessions, event, cfg, now_ms):
         # 2) 期间又有进展了 → 静默被打破，用户不需要这条提醒。
         #    锚点必须和 check_long_running 用同一个 progress_anchor()：判定认基础
         #    Agent 回报是进展，复查也必须认，否则复查会用更窄的尺子放行已经过时的提醒。
-        fresh = scan_transcript(fresh_da["sessionFile"])
+        fresh = scan_transcript(fresh_da)
         newer = progress_anchor(fresh)
         if newer > (detail.get("quietSince") or 0):
             return False, (f"期间已有新的进展（{fmt_ts(newer)}），"
@@ -2495,7 +2673,7 @@ def still_relevant(human, group_id, sessions, event, cfg, now_ms):
         verdict = judge_running(fresh_sessions)
         if verdict["state"] == STATE_RUNNING:
             return False, "数字人已重新开始运行，告警已过时"
-        outcome = latest_run_outcome(traj)
+        outcome = latest_run_outcome(fresh_da)
         if outcome["found"] and outcome["runId"] != detail.get("runId"):
             return False, f"最近 run 已换成 {outcome['runId'][:8]}，告警已过时"
         # 和判定用同一条自愈线索（见 check_model_error 的自愈判定二）：错误之后有 run
@@ -2591,43 +2769,44 @@ SUB_RUN_FAILED_ACTIVE_MS = 30 * 60 * 1000
 THRESHOLD_DEFAULTS["SUB_RUN_FAILED_GRACE_MS"] = SUB_RUN_FAILED_GRACE_MS
 
 
-def latest_run_outcome_lite(traj_file, as_of_ms=None, scan_bytes=8 * 1024 * 1024):
+def latest_run_outcome_lite(session, as_of_ms=None, scan_bytes=EVENT_SCAN_LIMIT):
     """只读 trajectory 尾部，返回最新 run 边界的 {marker,ts,status,promptError}。
 
     与 latest_run_outcome 的区别：只为新检测服务，每轮要对多个基础 Agent 会话各扫
-    一次，必须便宜。但**不能用小窗口**：实测（2026-08-31 群 10233285807）长会话尾部
-    全是 150KB 级的正文事件，256KB 窗口一行标记都盖不住。好在标记行本身只有几百
-    字节 —— 逐块读、**只对含标记字样的行做解析**，遇到第一个标记就停。正常读一两块
-    （128KB）就命中，最坏情况（尾部全是大正文）也只读 8MB 上限。
+    一次，必须便宜。所以先做一次**字符串预筛**（`"session.started" in raw`），
+    只对含标记字样的行付 JSON 解析的钱，遇到第一个标记就停。
+
+    > 旧布局下这一条更要紧：那时是逐块读文件，长会话尾部全是 150KB 级的正文事件
+    > （实测 2026-08-31 群 10233285807，256KB 窗口一行标记都盖不住）。SQLite 布局下
+    > 按行取、`seq` 有索引，压力小得多，但预筛照旧保留 —— 它便宜且有效。
 
     as_of_ms 用于离线复盘：忽略该时刻之后的标记。不带时看真正的"最新"。
-    注意回放保真度：sessions.json 的 status/activityTs 是最终快照，回放时不可信
+    注意回放保真度：session_nodes 的 status/activityTs 是最终快照，回放时不可信
     （信号 1/3 同样的问题）；但 trajectory 里的 run 边界是历史 append 的，带 as_of
     过滤后是可信的。
     """
-    if not traj_file or not os.path.exists(traj_file):
+    db_path, session_id = session_ref(session)
+    if not db_path or not session_id:
         return None
     last = None
-    try:
-        for raw, _ in iter_lines_reverse(traj_file, max_bytes=scan_bytes):
-            if b"session.started" not in raw and b"session.ended" not in raw:
-                continue          # 绝大多数行在这里就被跳过，不付 JSON 解析的钱
-            o = json_object(raw.decode("utf-8", errors="replace"))
-            if not o or o.get("type") not in RUN_MARKERS:
-                continue
-            ts = iso_to_ms(o.get("ts"))
-            if as_of_ms is not None and ts > as_of_ms:
-                continue          # 回放：忽略"未来"的标记，继续往前找
-            data = o.get("data") or {}
-            last = {
-                "marker": o["type"],
-                "ts": ts,
-                "status": str(data.get("status") or ""),
-                "promptError": str(data.get("promptError") or ""),
-            }
-            break        # 倒序第一个（不晚于 as_of）的就是该时刻的最新
-    except OSError:
-        return None
+    for raw, _ in iter_events_reverse(db_path, "trajectory_runtime_events",
+                                      session_id, limit=scan_bytes):
+        if "session.started" not in raw and "session.ended" not in raw:
+            continue          # 绝大多数行在这里就被跳过，不付 JSON 解析的钱
+        o = json_object(raw)
+        if not o or o.get("type") not in RUN_MARKERS:
+            continue
+        ts = iso_to_ms(o.get("ts"))
+        if as_of_ms is not None and ts > as_of_ms:
+            continue          # 回放：忽略"未来"的标记，继续往前找
+        data = o.get("data") or {}
+        last = {
+            "marker": o["type"],
+            "ts": ts,
+            "status": str(data.get("status") or ""),
+            "promptError": str(data.get("promptError") or ""),
+        }
+        break        # 倒序第一个（不晚于 as_of）的就是该时刻的最新
     return last
 
 
@@ -2893,8 +3072,7 @@ def check_sub_run_failed(human, group_id, sessions, cfg, now_ms, as_of_ms=None):
     for s in sessions:
         if s.get("role") != "基础Agent" or "group-virtual" not in (s.get("sessionKey") or ""):
             continue
-        traj = resolve_trajectory_file(s["sessionFile"])
-        outcome = latest_run_outcome_lite(traj, as_of_ms=as_of_ms or now_ms)
+        outcome = latest_run_outcome_lite(s, as_of_ms=as_of_ms or now_ms)
         if not outcome or outcome["marker"] != "session.ended":
             continue                      # 在跑（started）或没有 run 记录
         if outcome["status"] != "error":
@@ -2944,23 +3122,23 @@ def check_sub_run_failed(human, group_id, sessions, cfg, now_ms, as_of_ms=None):
 _pending_wakes = []
 
 
-def wake_landed_ts(session_file):
+def wake_landed_ts(session):
     """消息流里最后一条巡检器唤起消息的时间戳；0 表示还没有。
 
-    为什么用消息流而不是 trajectory：<sid>.jsonl 是**实时写**的，trajectory 要到 run
-    结束才 flush。唤起当下唯一拿得到的证据就是它。
+    为什么用消息流（transcript_events）而不是 trajectory：消息流是**实时写**的，
+    trajectory 要到 run 结束才 flush。唤起当下唯一拿得到的证据就是它。
     """
-    if not session_file:
+    if not session:
         return 0
-    return scan_transcript(session_file).get("tWake") or 0
+    return scan_transcript(session).get("tWake") or 0
 
 
-def da_session_file(sessions):
-    """从会话列表里取数字人自己那条的消息流路径。"""
+def da_session_of(sessions):
+    """从会话列表里取数字人自己那条（唤起送达判定要用它读消息流）。"""
     for s in sessions or []:
-        if s.get("role") == "数字人" and s.get("sessionFile"):
-            return s["sessionFile"]
-    return ""
+        if s.get("role") == "数字人" and all(session_ref(s)):
+            return s
+    return None
 
 
 def report_pending_wakes():
@@ -2974,7 +3152,7 @@ def report_pending_wakes():
     lines = []
     for item in list(_pending_wakes):
         proc = item["proc"]
-        landed = wake_landed_ts(item["sessionFile"]) > item["before"]
+        landed = wake_landed_ts(item["session"]) > item["before"]
         if landed:
             _pending_wakes.remove(item)
             lines.append(("acted", f"{item['tag']} → 唤起已确认送达（后台补报）"))
@@ -3092,8 +3270,8 @@ def wake_digital_human(human, event, dry_run, sessions=None, tag=""):
                              f"（gateway 端口 {port or '未指定'}）")
 
     # 先记下基线，之后靠"它有没有变大"来判断到底送到没有
-    session_file = da_session_file(sessions)
-    before = wake_landed_ts(session_file)
+    da_session = da_session_of(sessions)
+    before = wake_landed_ts(da_session)
 
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -3104,7 +3282,7 @@ def wake_digital_human(human, event, dry_run, sessions=None, tag=""):
 
     deadline = time.time() + WAKE_PROBE_SECONDS
     while time.time() < deadline:
-        if session_file and wake_landed_ts(session_file) > before:
+        if da_session and wake_landed_ts(da_session) > before:
             return "delivered", "已确认送达（唤起消息已进入数字人会话），数字人开始处理"
         if proc.poll() is not None:
             break
@@ -3112,16 +3290,16 @@ def wake_digital_human(human, event, dry_run, sessions=None, tag=""):
 
     code = proc.poll()
     if code is None:
-        if not session_file:
+        if not da_session:
             return "unconfirmed", (f"已启动但无法确认 —— 定位不到数字人消息流，"
                                    f"没有证据可查（{WAKE_PROBE_SECONDS}s 内未结束）")
-        _pending_wakes.append({"proc": proc, "sessionFile": session_file,
+        _pending_wakes.append({"proc": proc, "session": da_session,
                                "before": before, "tag": tag})
         return "unconfirmed", (f"已启动，但 {WAKE_PROBE_SECONDS}s 内消息流里还没出现这条"
                                f"唤起，尚不能确认送达；结果由后续轮次补报")
 
     output = strip_ansi((proc.stdout.read() if proc.stdout else "") or "").strip()
-    if session_file and wake_landed_ts(session_file) > before:
+    if da_session and wake_landed_ts(da_session) > before:
         return "delivered", "已确认送达并跑完一轮"
     if code == 0:
         return "failed", (f"进程正常退出，但消息流里没有这条唤起的痕迹，实际未送达："
@@ -3378,7 +3556,7 @@ TERMINAL_ERROR_LABELS = {
 RUN_OUTCOME_TYPES = ("model.completed", "session.ended")
 
 
-def latest_run_outcome(traj_file, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMIT):
+def latest_run_outcome(session, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMIT):
     """倒扫 trajectory，取"最近一个已结束的 run"的收尾情况。
 
     为什么要按 runId 圈：同一 run 的 model.completed 和 session.ended 都带异常标志，
@@ -3396,11 +3574,13 @@ def latest_run_outcome(traj_file, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMI
     out = {"runId": "", "endedTs": 0, "startedTs": 0, "status": None, "flags": [],
            "promptErrorSource": None, "externalAbort": False,
            "terminalError": None, "found": False}
-    if not traj_file:
+    db_path, session_id = session_ref(session)
+    if not db_path or not session_id:
         return out
     target_run = None
-    try:
-        for raw, _ in iter_lines_reverse(traj_file, max_bytes=scan_limit):
+    if True:
+        for raw, _ in iter_events_reverse(db_path, "trajectory_runtime_events",
+                                          session_id, limit=scan_limit):
             event = json_object(raw)
             if event is None:
                 continue
@@ -3443,8 +3623,6 @@ def latest_run_outcome(traj_file, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMI
             for field, label in MODEL_ERROR_FLAGS.items():
                 if data.get(field) is True and (field, label) not in out["flags"]:
                     out["flags"].append((field, label))
-    except OSError:
-        pass
     return out
 
 
