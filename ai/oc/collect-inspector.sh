@@ -28,19 +28,19 @@
 #    因此包里含真实群聊内容，**严禁入库**，传输和留存都按敏感数据对待。
 #
 # 用法：
-#   ./collect.sh <群号> [<群号> ...] [--out <目录>] [--openclaw-home <目录>]
+#   ./collect-inspector.sh <群号> [<群号> ...] [--out <目录>] [--openclaw-home <目录>]
 #                                   [--include-workspaces] [--no-redact]
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
 用法:
-  collect.sh <群号> [<群号> ...] [选项]
+  collect-inspector.sh <群号> [<群号> ...] [选项]
 
 示例:
-  ./collect.sh 10233933793
-  ./collect.sh 10233933793 10233880975 --out ~/Desktop
-  ./collect.sh 10233933793 --openclaw-home /data/openclaw
+  ./collect-inspector.sh 10233933793
+  ./collect-inspector.sh 10233933793 10233880975 --out ~/Desktop
+  ./collect-inspector.sh 10233933793 --openclaw-home /data/openclaw
 
 选项:
   --out <目录>             zip 输出目录，默认当前目录
@@ -486,6 +486,17 @@ for inst_dir in instances:
 
 print("\n公共配置")
 shared = manifest["shared"]
+
+# 数字人 → gateway slot 的映射。巡检器靠它算该连哪个端口（gateway_port_for）。
+# ⚠️ 少了它回放/验证时端口恒为 None，发送链路的行为复现不出来
+# （2026-09-15 实测：verify.py 那条"按 slot 算端口并注入"的断言会挂）。
+slots_src = os.path.join(openclaw_home, ".dh-slots.json")
+slots_dest = mirror_dest(slots_src)
+if slots_dest and copy_file(slots_src, slots_dest):
+    shared["dhSlots"] = os.path.relpath(slots_dest, package_dir)
+    print("  .dh-slots.json: 已收（gateway 端口映射）")
+else:
+    print("  .dh-slots.json: 没有（回放时 gateway 端口会是 None）")
 
 # 功能 24 的编排层。⚠️ 在 ~/.openclaw/ 根下，**不在**实例目录里 —— 这点很容易找错。
 shared["workflowContexts"] = []
