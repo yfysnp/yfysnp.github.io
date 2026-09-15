@@ -622,6 +622,45 @@ def activity_ts(entry):
     return max(candidates) if candidates else 0
 
 
+def snapshot_ts(value, now_ms):
+    """快照类时间戳的取值口径：晚于 now_ms 就当"取不到"（返回 0）。
+
+    ## 为什么需要这个
+
+    会话库里那些"当下状态"字段（activityTs / lastInteractionAt / startedAt /
+    updatedAt …）记的都是**采集那一刻**的值，没有历史。生产实时跑时 now_ms 就是现在，
+    它们必然 ≤ now_ms，这个函数等于没做事。但**回放历史时刻时它们是未来数据** ——
+    拿 22:06 的 lastInteractionAt 去判 16:26 那一刻发生了什么，判据必然成立。
+
+    这是 MEMORY 里那条"只在生产实时生效的保真度边界"的另一种表达。有两种实现：
+      · `as_of_ms is None` 整体关掉某条判据（信号 1/2 仲裁、步骤 0.5、功能 23 用这个）
+      · 把单个字段裁成 0（本函数）——**拿不到 as_of_ms 的函数只能用这种**
+
+    返回 0 而不是 now_ms：0 的语义是"这个信号没有"，会让依赖它的判据走"读不到"分支；
+    换成 now_ms 则相当于伪造了"刚刚才活动过"，把假阳性换成假阴性，更难发现。
+
+    ## 踩过两次
+
+    2026-09-09（第 14 件事）：check_sub_not_reported 的 da_working 用 activityTs，
+    回放 09-08 21:41 读到的是 09-09 13:00 的值，`da_working` 恒为真 → 回放里永远
+    走长宽限，短宽限那条分支根本验不到。
+
+    2026-09-14：铁律二-1 的"消息被吞"子形态判据是
+    `lastInteractionAt - tUser > MSG_SWALLOWED_MS`（阈值分钟级）。回放素材包时
+    lastInteractionAt 是采集时刻的值，和历史的 tUser 差了 6.8 小时 → **回放里
+    5 个时刻全部报"消息被吞"**，而实际那次数字人 12 分钟后就正常回话了。
+    这次是因为有了离线回放台才暴露出来 —— 生产实时看不见这类 bug。
+
+    ⚠️ `status` 这个字段**无法用本函数处理**：它是个枚举、没有时间戳可比。回放时
+    读到的可能是未来某一轮的状态，这是回放的固有缺口。最危险的形态（快照说 running
+    但 trajectory 说 ended）由信号 1/2 仲裁兜着，而那道仲裁本身只在生产实时生效。
+    """
+    if not isinstance(value, (int, float)) or value <= 0:
+        return 0
+    value = int(value)
+    return 0 if value > now_ms else value
+
+
 def read_sessions(db_path):
     """读一个 agent 的会话库，返回 {sessionKey: entry}。读不了就返回空。
 
@@ -1070,6 +1109,35 @@ def iter_events_reverse(db_path, table, session_id, limit=EVENT_SCAN_LIMIT):
             yield raw, i
 
 
+def latest_event_ts(session, as_of_ms, scan_limit=EVENT_SCAN_LIMIT):
+    """这条会话在 as_of_ms 之前最后一个事件的时刻；没有就返回 0。
+
+    **只给回放用**。步骤 0 要问"这个群最近有没有动静"，生产实时直接读 activityTs
+    快照就行（最准、不用扫盘）；但回放历史时刻时快照是未来数据，说不了话 ——
+    这时要退回真正带历史的证据，也就是事件表自己。
+
+    两张表都看、取更晚的：消息流有对话痕迹，trajectory 有 run 边界，
+    只看一张会漏（纯对内派活的 run 不写消息流；用户刚发言还没起 run 时反之）。
+
+    时刻取 event_json 里的 ts/timestamp，不取 created_at 列 —— 后者是网关落盘时刻，
+    补投/重放时会晚于事件真实发生时刻，判"那一刻之前"必须用事件自己的时间。
+    """
+    db_path, session_id = session_ref(session)
+    if not db_path or not session_id:
+        return 0
+    newest = 0
+    for table in ("transcript_events", "trajectory_runtime_events"):
+        for raw, _ in iter_events_reverse(db_path, table, session_id, limit=scan_limit):
+            event = json_object(raw)
+            if event is None:
+                continue
+            ts = iso_to_ms(event.get("ts") or event.get("timestamp"))
+            if ts and ts <= as_of_ms:
+                newest = max(newest, ts)
+                break        # 倒序，第一个 ≤ as_of 的就是这张表里最晚的那个
+    return newest
+
+
 def iso_to_ms(s):
     """ISO8601 时间（形如 2026-08-19T03:15:24.291Z）→ epoch 毫秒；解析不了返回 0。
 
@@ -1240,12 +1308,12 @@ def judge_running(sessions, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMIT, cc=
 
     # 信号 4：CC 子会话活跃（方案的第 4 条，旧实现从未接上）
     #
-    # 和 ALERT_CC_STALLED 一起禁用（CC_STALLED_ENABLED=False）：两者依赖的是同一个
-    # cc["running"]，而它来自会活跃计数泄漏的 session.json。2026-09-03 实测项目
+    # 和 ALERT_CC_STALLED 受同一开关控制：两者依赖的是同一个 cc["running"]。
+    # 2026-09-15 已按生产要求启用，但它来自会活跃计数泄漏的 session.json。实测项目
     # P-20260818（群 10232767188）15 天前就结束了，sessions 里仍留着一个 "1"，
     # 信号 4 照样命中"1 个子会话在跑"。
     #
-    # 这里的危害比误报一条告警更重：信号 4 命中就把运行态钉成 running，
+    # 已知风险比误报一条告警更重：信号 4 命中就把运行态钉成 running，
     # 整个 idle 分支（含功能 23 那类基础 Agent 失败告警）全被压住 —— 正是
     # 2026-09-02 群 10233415382 漏报 2.9 小时的同一种失效，只是换条路径复现。
     # 那个群当时恰好被快照残留仲裁救成 idle，属于撞巧，不是判据可靠。
@@ -1592,6 +1660,79 @@ AWAITING_USER_SEND_TYPES = ("clarification", "confirmation")
 # 这种带关键词的话。按前缀猜必然两头都错。
 OPENCLAW_MSG_META = "__openclaw"
 
+# 已知的"运行时注入但**也带** __openclaw"的形态前缀。
+#
+# ⚠️ 2026-09-14 新增这道补充判据。原来只靠"有没有 __openclaw"就分得干干净净，
+# 但那次跑模拟交付时哨兵炸了：`[任务交接卡]` 开始带 `{"senderIsOwner": true}` 了
+# （大概是走了统一的消息投递路径），于是被当成真人发言、污染了基础 Agent 会话的
+# tUser。同一个会话里两张交接卡，一张带 meta 一张不带 —— 说明注入本身就不一致。
+#
+# 危害不是理论上的：交接卡是**派活投进基础 Agent 会话的卡**，不是人说的话。
+# 把它当 tUser，铁律二-1 就会拿一张任务卡当"用户在等回复"，而基础 Agent 对内
+# 处理任务卡不会对客 → 一路走到告警。和 2026-08-25 那次误报同一个形态、换了来源。
+#
+# **为什么不改成"要求 senderId 在场"**：实测真人消息里也有只带 `senderIsOwner`
+# 的（zqjzszr 主会话那几条），要求 senderId 会把它们误杀。失败方向更糟 ——
+# 认不出用户消息等于永不告警。所以这里只对**已知的注入前缀**加码，
+# 真人判据一个字没放宽。
+#
+# 这份名单和 verify.py 哨兵里的 markers 是同一组形态。加新形态时两处一起加，
+# 并且先确认它**真的**是注入（同一会话里有不带 meta 的同类，或正文自称 runtime）。
+# ⚠️ **名单要全，不能只列"会带 meta 的那几种"**。2026-09-15 拿线上群 10233845885
+# 的素材（1832 条真人 + 778 条注入）跑哨兵时确认：openclaw 正在逐步给所有注入消息
+# 挂 meta，而且**同一种前缀带不带 meta 是混的** —— 同一个 agent 的 `[System]` 有
+# 4 条不带、4 条带 `{"senderIsOwner": false}`；`[CC-CALLBACK]` 200 多条不带、
+# 4 条带 `{"senderIsOwner": true}`。所以"这种形态从不带 meta"这个前提不可靠，
+# 凡是注入形态都得列进来。
+RUNTIME_INJECT_PREFIXES = (
+    # 网关/运行时自身
+    "[System]",
+    "Continue the OpenClaw runtime event.",
+    "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>",
+    # CC 回调
+    "[CC-CALLBACK]",
+    # 定时任务，形如 [cron:5161aa82-… skill-collection-review-maliang] Review this…
+    "[cron:",
+    # 派活/回报/跨会话链路
+    "[任务交接卡]",
+    "[任务回报]",
+    "[Subagent Context]",
+    "[Inter-session message]",
+    # 2026-09-15 线上素材（群 10233845885）新增这一批，都是编排层投进会话的
+    # 指令/通知/任务卡，不是人说的话。
+    #
+    # ⚠️ 注意 `[调度指令` 和 `[续跑通知` 刻意**不写右括号** —— 实测同一类前缀带
+    # 后缀变体（`[调度指令 · 催办 · 续跑]`、`[续跑通知-降级执行]`），写死全名会漏。
+    # 其余保留完整括号的是没见过变体的。
+    "[调度指令",
+    "[续跑通知",
+    "[状态通知]",
+    "[催办-状态同步]",
+    "[用户回复转发]",
+    "[回报重发请求]",
+    "[任务卡]",
+    "[继续执行]",
+    # 用户裁决回投，形如 [F（用户回复回投）] 用户对结项前门禁…（原文转发）
+    # 是编排层把用户在别处的回复转发进会话，不是用户在这个会话里发言。
+    "[F（用户回复回投）]",
+)
+
+
+def _is_runtime_injected(msg, body):
+    """这条 role=user 消息是不是运行时注入的（而非真人发言）。
+
+    两条判据，任一成立即算注入：
+      1. 没有 __openclaw 元数据块 —— 原始判据，绝大多数注入都这样
+      2. 有元数据块，但正文是已知的注入形态 —— 2026-09-14 补的，见上面那段
+
+    ⚠️ 判据 2 **只认白名单前缀**，不做"以 [ 开头"这类猜测：实测 `[图片]` 是真人
+    发图（还带 MediaPath）、`[System]` 才是注入，两者形状一模一样。
+    """
+    if OPENCLAW_MSG_META not in msg:
+        return True
+    text = body if isinstance(body, str) else ""
+    return text.lstrip().startswith(RUNTIME_INJECT_PREFIXES)
+
 
 def scan_transcript(session, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMIT):
     """倒着扫消息流（transcript_events 表），采集判定要用的时间点。
@@ -1621,6 +1762,10 @@ def scan_transcript(session, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMIT):
     """
     out = {"tUser": 0, "tDaSendOk": 0, "tDaText": 0, "tDaReply": 0, "tSubReport": 0,
            "tModelError": 0, "modelErrorMessage": "", "modelChain": [],
+           # 最后一次 assistant **动作**（文本或工具调用都算，不要求对客）。
+           # tDaText/tDaReply 只认"对客"，而 failover 之后往往是继续调工具干活、
+           # 并不对客 —— 判"切了模型之后到底有没有真的接着跑"要用这个。
+           "tDaAct": 0,
            "tDispatch": 0, "lastNoReply": False, "tNoReplyMark": 0, "tWake": 0,
            "tRuntime": 0,
            "lastSendType": "",
@@ -1675,7 +1820,7 @@ def scan_transcript(session, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMIT):
                     sub = parts[1] if len(parts) > 1 else ""
                     if sub and sub not in out["recvFrom"]:
                         out["recvFrom"][sub] = ts     # 倒序，第一次遇到就是最近一次
-                elif OPENCLAW_MSG_META not in msg:
+                elif _is_runtime_injected(msg, body):
                     # 运行时注入的消息，不是人发的，绝不能重置"用户在等"的基准。
                     if not out["tRuntime"]:
                         out["tRuntime"] = ts
@@ -1703,6 +1848,10 @@ def scan_transcript(session, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMIT):
                 if msg.get("stopReason") == "error" and not out["tModelError"]:
                     out["tModelError"] = ts
                     out["modelErrorMessage"] = str(msg.get("errorMessage") or "").strip()
+                # 最后一次 assistant 动作。**排除 stopReason=error 那条本身** ——
+                # 它是"这一轮失败了"的记录，不是"数字人在动"的证据。
+                elif not out["tDaAct"] and msg.get("stopReason") != "error":
+                    out["tDaAct"] = ts
                 for c in (msg.get("content") or []):
                     if not isinstance(c, dict):
                         continue
@@ -2002,10 +2151,60 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
     trace = []
 
     # 步骤 0：僵尸群过滤
-    newest = max((s["activityTs"] for s in sessions), default=0)
+    #
+    # activityTs 是**整条会话**的快照，回放历史时刻时它是未来数据。
+    #
+    # ⚠️ 但这里**不能**简单裁成 0 然后当"没活动"跳过（2026-09-14 我先这么改，
+    # 把整条回放路径堵死了：所有会话的 activityTs 都晚于回放时刻 → newest=0 →
+    # 判僵尸群 → 回放永远走不到步骤 F，功能 4 的 34 个探测点全部不触发）。
+    # 裁成 0 的语义是"**这个字段说不了话**"，不是"那一刻这个群没动过" —— 两者不同，
+    # 把"不知道"当成"已死"就是拿保真度换来了一个更严重的错。
+    #
+    # 回放时改用**真的有历史**的证据：消息流/trajectory 里该时刻之前的最后一个事件。
+    # 生产实时走原来的快照路径（那时快照就是当下，最准且不用扫盘）。
+    if as_of_ms is None:
+        newest = max((s["activityTs"] for s in sessions), default=0)
+    else:
+        newest = max((latest_event_ts(s, as_of_ms) for s in sessions), default=0)
     idle_ms = now_ms - newest if newest else None
+
+    # 项目状态提前读一次：通常仍由步骤 0.5 使用；但群已经超过活跃窗口时，还要用它
+    # 防止把已结项项目里的历史失败重新翻出来。生产实时才可信，回放时不采。
+    project = find_cc_project(group_id, human.get("daId")) if as_of_ms is None else None
+    closed = project_closed(project)
+
     if idle_ms is None or idle_ms > threshold(cfg, "ACTIVE_WINDOW_MS"):
         shown = f"{idle_ms / 60000:.0f}min" if idle_ms is not None else "无活动记录"
+        if closed:
+            trace.append(f"步骤0 活跃检查：最近活动 {shown} 前；项目已结项（{closed}）"
+                         " → 僵尸群，跳过")
+            return [], trace
+
+        # 不能让 30 分钟僵尸窗口吃掉 30 分钟后才成熟的基础 Agent 失败告警。
+        # 线上实例（2026-09-15 群 10233998088）：魏征 19:47 timeout/interrupted，
+        # 此后群里无人说话；20:18 告警刚过宽限时，步骤 0 已先把群判成僵尸，导致
+        # 一直漏到用户 21:35 主动追问。这里仅对 trajectory 明确记录的失败放行，
+        # 不是把所有老群重新打开；结项项目仍由上面的强闸门挡住。
+        failed_event = check_sub_run_failed(
+            human, group_id, sessions, cfg, now_ms,
+            as_of_ms=as_of_ms, require_group_active=False)
+        if failed_event:
+            # 生产实时还要有“该 sub 对应的工作流节点仍 open”作为在途证明，避免把几天前
+            # 未结项项目里无关的历史失败重新翻出来。回放时 state.json 是未来快照，不能
+            # 做这层关联，只使用 trajectory 的历史边界验证当时本应产生的事件。
+            in_flight = True
+            if as_of_ms is None:
+                open_nodes = read_workflow_open_nodes(group_id, human.get("daId"), now_ms)
+                executor_of = workflow_executors(human)
+                failed_sub = failed_event["detail"]["sub"]
+                in_flight = any(executor_of.get(node["node"]) == failed_sub
+                                for node in open_nodes)
+            if in_flight:
+                trace.append(f"步骤0 活跃检查：最近活动 {shown} 前，但检测到基础 Agent "
+                             f"{failed_event['detail']['sub']} 明确失败、对应节点仍在途且"
+                             "超过恢复宽限 → 继续告警")
+                return [failed_event], trace
+
         trace.append(f"步骤0 活跃检查：最近活动 {shown} 前 → 僵尸群，跳过")
         return [], trace
     trace.append(f"步骤0 活跃检查：最近活动 {idle_ms / 60000:.1f}min 前 → 继续")
@@ -2026,8 +2225,6 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
     #
     # 同一个群先后有多个项目时，find_cc_project 取 META.md 最新修改的那个 ——
     # 所以结项之后群里再立新项目，闸门会自动重新打开，不需要人工解除。
-    project = find_cc_project(group_id, human.get("daId")) if as_of_ms is None else None
-    closed = project_closed(project)
     if closed:
         trace.append(f"步骤0.5 结项检查：项目 {project['projectKey']} 已结项"
                      f"（{closed}）→ 不再有任何通知，跳过")
@@ -2123,7 +2320,10 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
             trace.append(f"→ 命中 {event['type']}：{event['detail']['projectKey']}")
             return [event], trace
 
-        gap = ((da.get("lastInteractionAt") or 0) - transcript["tUser"]) if da else 0
+        # 和 check_user_not_replied 用同一把尺子（snapshot_ts 裁掉未来值）——
+        # trace 里显示的数字必须和判据实际用的一致，否则回放时"trace 说差 6.8 小时、
+        # 判据却没报"会让人以为判据坏了。
+        gap = (snapshot_ts(da.get("lastInteractionAt"), now_ms) - transcript["tUser"]) if da else 0
         trace.append(
             f"　二-1 用户消息未获回复：T_user={fmt_ts(transcript['tUser'])}"
             f"　T_da_reply={fmt_ts(transcript['tDaReply'])}"
@@ -2621,9 +2821,29 @@ def send_group_message(human, event, dry_run):
         return False, f"输出不是 JSON 对象：{proc.stdout.strip()[:200]}"
     if dry_run:
         return True, f"dryRun 通过（未投递），最终文本 {len(result.get('finalMessage') or '')} 字"
-    if result.get("sent") is True:
-        return True, "已投递"
-    return False, f"脚本未投递：sent={result.get('sent')} warning={result.get('warning')}"
+    # 判据和 _send_result_ok() 保持一致：优先认 sent，**没有这个字段时退回 ok=true**。
+    #
+    # ⚠️ 2026-09-15 线上事故（群 10233957509，30 秒连发 7 条）的根因就在这一行。
+    # jxt 的 send-user-message.py 更新后成功输出丢了 `sent` 字段（只剩 ok/finalMessage），
+    # 而这里只认 `sent is True` → 每次成功投递都被判成失败。后果是**四道降噪闸门
+    # 全部绕过**：判失败 → 不写 notified.json → signature 去重、同类冷却
+    # （COOLDOWN_MS=30min）、群级总冷却、1 小时限流全都拿不到"上次发过"的记录 →
+    # 每一轮都当"首次发送"重新实发。消息其实条条都落群了。
+    #
+    # 同一份判据 _send_result_ok() 早就有这个回退（它扫消息流判别人的投递结果），
+    # 唯独发送这条路上漏了 —— 两处必须同口径，否则"扫出来算成功、自己发却算失败"。
+    #
+    # 回退到 ok 而不是"没有 sent 就当成功"：ok=false 时脚本自己已经说了失败
+    # （见上面 returncode 那一支，以及脚本 emit(result, 5) 那条路）。
+    if "sent" in result:
+        sent_ok = result["sent"] is True
+    else:
+        sent_ok = result.get("ok") is True and result.get("assembleOnly") is not True
+    if sent_ok:
+        # 明确记下是靠哪条判据认定的 —— 契约再断裂时日志里能一眼看出来
+        return True, "已投递" if "sent" in result else "已投递（脚本无 sent 字段，按 ok=true 判定）"
+    return False, (f"脚本未投递：sent={result.get('sent')} ok={result.get('ok')} "
+                   f"warning={result.get('warning')}")
 
 
 def still_relevant(human, group_id, sessions, event, cfg, now_ms):
@@ -2683,6 +2903,16 @@ def still_relevant(human, group_id, sessions, event, cfg, now_ms):
                 and (outcome.get("endedTs") or 0) > anchor):
             return False, (f"错误之后已有 run 于 {fmt_ts(outcome['endedTs'])} 成功结束，"
                            f"已自愈，告警已过时")
+        # 自愈判定三的复查（2026-09-15 同步补上）：切了模型且之后真的又动起来了。
+        # ⚠️ MEMORY 原则 7 —— 判定、文案、去重、**复查**四处必须用同一把尺子。
+        # 判定加了新的自愈条件而复查没跟上，表现是：判定这一轮不报了，但上一轮
+        # 已经发出去的告警在冷却结束后仍被复查放行、再发一次。
+        fresh_tr = scan_transcript(fresh_da)
+        switched = [m for m in (fresh_tr.get("modelChain") or [])
+                    if (m.get("ts") or 0) > anchor]
+        if anchor and switched and (fresh_tr.get("tDaAct") or 0) > anchor:
+            return False, (f"错误之后已切换模型（{switched[0].get('modelId')}）并恢复动作，"
+                           f"failover 已生效，告警已过时")
         return True, ""
 
     return True, ""
@@ -2800,11 +3030,14 @@ def latest_run_outcome_lite(session, as_of_ms=None, scan_bytes=EVENT_SCAN_LIMIT)
         if as_of_ms is not None and ts > as_of_ms:
             continue          # 回放：忽略"未来"的标记，继续往前找
         data = o.get("data") or {}
+        flags = [field for field in MODEL_ERROR_FLAGS if data.get(field) is True]
         last = {
             "marker": o["type"],
             "ts": ts,
             "status": str(data.get("status") or ""),
-            "promptError": str(data.get("promptError") or ""),
+            "promptError": str(data.get("promptError") or data.get("promptErrorSource") or ""),
+            "flags": flags,
+            "externalAbort": data.get(EXTERNAL_ABORT_FLAG) is True,
         }
         break        # 倒序第一个（不晚于 as_of）的就是该时刻的最新
     return last
@@ -2914,6 +3147,47 @@ def _workflow_ts(value):
     return int(parsed.timestamp() * 1000)
 
 
+def workflow_task_evidence(group_id, da_id, execution_id):
+    """查找与 workflow execution 对应的任务卡，返回最强接手证据；没有则返回空串。
+
+    task 文件与 execution 的稳定关联键是 workflowRef.nodeExecutionId。只看 assignee 或
+    node 名会在同群节点重跑时串单。status=running/done 或 ackAt 非空都能证明执行者
+    已经接手；任务卡是编排层事实，比数字人消息流是否刚好记录到 dispatchTo 更可靠。
+    """
+    pattern = os.path.join(WORKFLOW_CONTEXTS_DIR, str(group_id), str(da_id),
+                           "tasks", "task-*.json")
+    for path in glob.glob(pattern):
+        task = json_object_from_file(path) or {}
+        if ((task.get("workflowRef") or {}).get("nodeExecutionId") != execution_id):
+            continue
+        status = str(task.get("status") or "")
+        ack_at = str((task.get("lifecycle") or {}).get("ackAt") or "")
+        if status in ("running", "done") or ack_at:
+            return (f"任务卡 {task.get('taskId') or os.path.basename(path)} "
+                    f"status={status or '?'}"
+                    f"{' ackAt=' + ack_at if ack_at else ''}")
+    return ""
+
+
+def workflow_executor_evidence(sessions, executor, now_ms, recent_ms=10 * 60 * 1000):
+    """返回执行者已经接手/近期仍在工作的会话证据；没有返回空串。"""
+    if not executor:
+        return ""
+    for session in sessions:
+        if (session.get("role") != "基础Agent" or session.get("agentId") != executor
+                or "group-virtual" not in (session.get("sessionKey") or "")):
+            continue
+        if session.get("status") == "running":
+            return f"执行者 {executor} 会话 status=running"
+        outcome = latest_run_outcome_lite(session, as_of_ms=now_ms)
+        if outcome and outcome.get("marker") == "session.started":
+            return f"执行者 {executor} trajectory 最新为 session.started"
+        latest = latest_event_ts(session, now_ms)
+        if latest and 0 <= now_ms - latest <= recent_ms:
+            return f"执行者 {executor} 最近活动于 {fmt_ts(latest)}"
+    return ""
+
+
 def check_workflow_node_stalled(human, group_id, sessions, cfg, now_ms,
                                 transcript, as_of_ms=None):
     """功能 24：工作流节点开着但迟迟没人接 → ALERT_WORKFLOW_NODE_STALLED。
@@ -2928,9 +3202,10 @@ def check_workflow_node_stalled(human, group_id, sessions, cfg, now_ms,
       4. 该 execution 距开始超过 WORKFLOW_NODE_STALLED_MS，**且群最近还活跃**
          （复用功能 23 的 SUB_RUN_FAILED_ACTIVE_MS 口径）。少了后半条就是那个
          同事脚本的形态：本机 6 个 open execution 全部超阈值、全量告警。
-      5. **会话层看不到这个节点的执行者在动**：它既不在 dispatchTo 里（没派活
-         记录）、也没有回报记录。这一条是本判据存在的理由 —— 派出去了正常在跑的，
-         归铁律一管；跑失败的归功能 23 管；这里只兜"编排层开着、会话层完全没动静"。
+      5. **没有任何“已接手/正在执行”的反证**：任务卡无 ack/running/done、执行者
+         group-virtual 会话不在 running、trajectory 没有未结束 run、最近 10 分钟没有
+         会话活动、backend-dev 的 CC 也没有近期触碰，最后才看数字人消息流里的
+         dispatchTo/recvFrom。任一反证成立都不能说“没人接手”。
 
     第 5 条同时是**去重机制**：正常派活的节点会被它挡住，所以这个告警不会和
     铁律一/功能 23 对同一件事重复报。
@@ -2966,7 +3241,10 @@ def check_workflow_node_stalled(human, group_id, sessions, cfg, now_ms,
         return None
 
     # 群最近还有人在等吗（判据 4 后半条）
-    group_active = max((s.get("activityTs") or 0 for s in sessions), default=0)
+    # 过 snapshot_ts 是纵深防御：本函数开头已经用 as_of_ms is not None 整体挡住回放，
+    # 所以这里理论上 now_ms 就是现在。但两道边界用同一个口径更好推理 ——
+    # 哪天判据 1 放开了回放，这里不会变成漏掉的那一处。
+    group_active = max((snapshot_ts(s.get("activityTs"), now_ms) for s in sessions), default=0)
     if not group_active or now_ms - group_active > SUB_RUN_FAILED_ACTIVE_MS:
         return None
 
@@ -2979,7 +3257,24 @@ def check_workflow_node_stalled(human, group_id, sessions, cfg, now_ms,
         if now_ms - node["startedAt"] <= stalled:
             continue
         executor = executor_of.get(node["node"], "")
-        # 判据 5：会话层有这个执行者的动静就不报（那是别的告警的辖区）
+
+        # 判据 5：按证据强度逐层确认执行者是否已经接手。2026-09-15 群 10233867871
+        # 的 backend-dev 已有 task.ack、沈括 trajectory 正在持续 tool.call，CC 也在跑；
+        # 旧实现却只看数字人 transcript 的 dispatchTo/recvFrom，因手工拆开的
+        # task.py create + send-card.py 没被识别，误报“开启 1 小时但一直没人接手”。
+        task_evidence = workflow_task_evidence(
+            group_id, human.get("daId"), node["executionId"])
+        if task_evidence:
+            continue
+        session_evidence = workflow_executor_evidence(sessions, executor, now_ms)
+        if session_evidence:
+            continue
+        if (node["node"] == "backend-dev" and (transcript.get("cc") or {}).get("found")):
+            cc = transcript["cc"]
+            cc_touch = cc.get("lastTouch") or 0
+            # activeCount 会泄漏，不能只凭 running；近期真实触碰才是这里采用的反证。
+            if cc_touch and 0 <= now_ms - cc_touch <= 10 * 60 * 1000:
+                continue
         if executor and (dispatched.get(executor) or received.get(executor)):
             continue
         names = human.get("agentNames") or {}
@@ -2997,8 +3292,10 @@ def check_workflow_node_stalled(human, group_id, sessions, cfg, now_ms,
             "sessionKey": da["sessionKey"],
             "channel": da["channel"],
             "target": da["target"],
+            # "还没有人接"而不是"一直没有接手"：后者带责备语气，而这个判据兜的
+            # 恰恰是"派发没落地"——多半根本没派到 executor 那里，不是它不肯接。
             "text": (f"⚠️ {da_name} 的工作流节点「{node['node']}」已开启 "
-                     f"{fmt_duration(waited)}，但{who}一直没有接手。"
+                     f"{fmt_duration(waited)}，{who}还没有开始执行。"
                      f"\n　　{recovery_hint(cfg)}"),
             "detail": {
                 "gate": {"key": "WORKFLOW_NODE_STALLED_MS", "measured": waited},
@@ -3042,7 +3339,8 @@ def workflow_executors(human):
     return out
 
 
-def check_sub_run_failed(human, group_id, sessions, cfg, now_ms, as_of_ms=None):
+def check_sub_run_failed(human, group_id, sessions, cfg, now_ms, as_of_ms=None,
+                         require_group_active=True):
     """功能 23：基础 Agent 执行失败后宽限期内无人接手 → ALERT_SUB_RUN_FAILED。
 
     判据（对每个 group-virtual 基础 Agent 会话）：
@@ -3064,10 +3362,10 @@ def check_sub_run_failed(human, group_id, sessions, cfg, now_ms, as_of_ms=None):
     names = human.get("agentNames") or {}
     grace = threshold(cfg, "SUB_RUN_FAILED_GRACE_MS")
     # 条件 1 的活跃判据：整个群最近有没有动静（≠ 失败会话自己有没有动静）
-    if as_of_ms is None:
+    if as_of_ms is None and require_group_active:
         group_active = max((s.get("activityTs") or 0 for s in sessions), default=0)
         if not group_active or now_ms - group_active > SUB_RUN_FAILED_ACTIVE_MS:
-            return None                   # 群都凉了，没人在等这单
+            return None                   # 普通路径仍保留活跃守卫；步骤0的明确失败旁路会关闭它
     hits = []
     for s in sessions:
         if s.get("role") != "基础Agent" or "group-virtual" not in (s.get("sessionKey") or ""):
@@ -3075,7 +3373,20 @@ def check_sub_run_failed(human, group_id, sessions, cfg, now_ms, as_of_ms=None):
         outcome = latest_run_outcome_lite(s, as_of_ms=as_of_ms or now_ms)
         if not outcome or outcome["marker"] != "session.ended":
             continue                      # 在跑（started）或没有 run 记录
-        if outcome["status"] != "error":
+        status = outcome["status"]
+        flags = set(outcome.get("flags") or [])
+        # OpenClaw 2026.9.4 的超时不一定落成 status=error。真实样本中基础 Agent
+        # 结束为 status=interrupted，同时 data.timedOut=true、externalAbort=false；
+        # 旧实现只认 error，导致明确的 idle timeout 静默 1 小时 47 分钟也不报警。
+        # interrupted 本身不能一概当故障（用户主动停止也会出现），必须同时有超时/
+        # 中断错误信号，并排除 externalAbort。
+        explicit_error = status in ("error", "failed", "timeout")
+        interrupted_failure = (
+            status == "interrupted"
+            and not outcome.get("externalAbort")
+            and bool(flags or outcome.get("promptError"))
+        )
+        if not (explicit_error or interrupted_failure):
             continue
         failed_at = outcome["ts"]
         if not failed_at or now_ms - failed_at <= grace:
@@ -3085,7 +3396,9 @@ def check_sub_run_failed(human, group_id, sessions, cfg, now_ms, as_of_ms=None):
             "agentId": agent_id,
             "failedAt": failed_at,
             "waitedMs": now_ms - failed_at,
-            "reason": outcome["promptError"] or "未知原因",
+            "reason": (outcome["promptError"]
+                       or "、".join(MODEL_ERROR_FLAGS.get(f, f) for f in flags)
+                       or f"异常结束 status={status}"),
             "sessionKey": s.get("sessionKey"),
         })
     if not hits:
@@ -3102,9 +3415,11 @@ def check_sub_run_failed(human, group_id, sessions, cfg, now_ms, as_of_ms=None):
         "sessionKey": h["sessionKey"],
         "channel": next((s.get("channel") for s in sessions if s.get("role") == "数字人"), ""),
         "target": next((s.get("target") for s in sessions if s.get("role") == "数字人"), ""),
+        # 去掉"任务可能挂起"这句推测 —— 前半句已经把事实说全了（何时中断、原因、
+        # 至今多久没重开），"可能挂起"既不增加信息、又让人以为要自己去处理。
         "text": (f"⚠️ {da_name} 派给 {agent_name} 的执行在 "
                  f"{fmt_ts(h['failedAt'])}异常中断（{h['reason'][:80]}），"
-                 f"已 {fmt_duration(h['waitedMs'])}无恢复，任务可能挂起。"
+                 f"至今 {fmt_duration(h['waitedMs'])}未重新开始。"
                  f"\n　　{recovery_hint(cfg)}"),
         "detail": {
             "gate": {"key": "SUB_RUN_FAILED_GRACE_MS", "measured": h["waitedMs"]},
@@ -3686,16 +4001,12 @@ def check_sub_not_reported(human, group_id, sessions, cfg, now_ms, transcript):
     # 最近一次收到任何基础 Agent 的回报 —— 和 progress_anchor 同一套"有进展"口径，
     # 只是这里不含 tUser（用户说话不代表数字人在推进，它可能压根没接上）。
     #
-    # ⚠️ activityTs 来自 sessions.json 快照，回放历史时刻时它是**未来数据**
-    # （实测回放 09-08 21:41 时读到的是 09-09 13:00 的活动时间），会让 da_working
-    # 恒为真、回放里永远走长宽限。所以晚于 now_ms 的一律丢掉 —— 生产实时跑时
-    # activityTs 必然 ≤ now_ms，这个裁剪不影响它。
-    # 这是 MEMORY 里那条"只在生产实时生效的保真度边界"的同一种情况，只是这里用
-    # 裁剪而不是 as_of_ms 开关：本函数拿不到 as_of_ms，而裁剪本身就足够表达语义。
+    # ⚠️ activityTs 是快照字段，回放历史时刻时是**未来数据**（实测回放 09-08 21:41
+    # 时读到的是 09-09 13:00 的活动时间），不裁的话 da_working 恒为真、回放里永远
+    # 走长宽限，短宽限那条分支根本验不到。snapshot_ts 就是为这件事抽出来的，
+    # 它的 docstring 里记着这个案例和 2026-09-14 那次 lastInteractionAt 的同类 bug。
     da_session = next((s for s in sessions if s["role"] == "数字人"), None)
-    da_activity = (da_session or {}).get("activityTs") or 0
-    if da_activity > now_ms:
-        da_activity = 0
+    da_activity = snapshot_ts((da_session or {}).get("activityTs"), now_ms)
     da_last_active = max(da_activity,
                          transcript.get("tDaReply") or 0,
                          transcript.get("tSubReport") or 0)
@@ -3754,13 +4065,16 @@ def check_sub_not_reported(human, group_id, sessions, cfg, now_ms, transcript):
     last_report = (transcript["recvFrom"] or {}).get(stale[0][0], 0)
     progress_at = max(oldest, last_report)
     since_ms = now_ms - progress_at
+    # 措辞统一成"还在等回报"这个客观状态，不说"没有进展"——
+    # 后者是对 sub 工作状态的判断，而巡检器只看得见"回报有没有到"这一件事：
+    # sub 可能正在闷头干活（长任务本来就没有中间回报），说它"没有进展"是超出证据的断言。
     if last_report:
-        waited_text = (f"，自派活后已 {fmt_duration(since_ms)}没有进展"
+        waited_text = (f"，已等待回报 {fmt_duration(since_ms)}"
                        f"（{names.get(stale[0][0], stale[0][0])}"
                        f"上次回报在 {fmt_duration(now_ms - last_report)}前）")
     else:
         # 从来没回报过的 sub 没有"上次回报"可言，不能对它说"上次回报在 X 前"
-        waited_text = f"，但 {fmt_duration(since_ms)}没有收到回报"
+        waited_text = f"，已等待回报 {fmt_duration(since_ms)}"
     return {
         "type": "ALERT_SUB_NOT_REPORTED",
         "severity": "ALERT",
@@ -3833,8 +4147,9 @@ def check_da_not_replied_after_sub(human, group_id, sessions, cfg, now_ms, trans
         "sessionKey": da["sessionKey"],
         "channel": da["channel"],
         "target": da["target"],
-        "text": (f"⚠️ {da_name} 已收到 {sub_name} 的结果，但 "
-                 f"{fmt_duration(now_ms - latest_recv)}没有转达给您。"
+        # "尚未转达"是状态，"没有转达给您"读起来像在追究它的失职。
+        "text": (f"⚠️ {da_name} 已收到 {sub_name} 的结果，"
+                 f"{fmt_duration(now_ms - latest_recv)}尚未转达。"
                  f"\n　　{recovery_hint(cfg)}"),
         "detail": {
             "gate": {"key": "INTER_SESSION_ACK_MS", "measured": now_ms - latest_recv},
@@ -3868,11 +4183,12 @@ def check_da_not_replied_after_sub(human, group_id, sessions, cfg, now_ms, trans
 CC_PROJECTS_DIR = os.path.join(OPENCLAW_HOME, "projects")
 CC_CONFIG_DIR = os.path.join(OPENCLAW_HOME, "cc-config", "projects")
 
-# ALERT_CC_STALLED 的开关。2026-09-03 实测发现判据不成立（活跃计数会泄漏、
-# max_last_ts 不是心跳），详见 check_cc_stalled 的 docstring。
-# 写成模块常量而不是配置项：这不是"用户可以按需开关"的功能，而是"判据错了、
-# 修好之前不许开"。放进 config.json 会让人以为打开它就能用。
-CC_STALLED_ENABLED = False
+# ALERT_CC_STALLED 与运行态信号 4 的总开关。两者必须同开同关：只开信号 4 会让
+# CC 活跃压住 idle 告警，只开卡死告警又会和运行态口径矛盾。
+# 2026-09-15 按生产要求启用。注意现有 CC 数据源仍有已知局限：sessions 活跃计数
+# 可能泄漏，max_last_ts/session.lock 也不是严格心跳；下面的判据说明保留这些风险，
+# 方便线上出现疑似误判时追溯。
+CC_STALLED_ENABLED = True
 
 
 def encode_cc_dir(path):
@@ -4005,7 +4321,7 @@ def read_cc_status(cc_dir):
 
 
 def check_cc_stalled(human, group_id, sessions, cfg, now_ms, cc):
-    """E · CC 卡死 → ALERT_CC_STALLED。**当前已禁用，判据不成立。**
+    """E · CC 卡死 → ALERT_CC_STALLED。**当前已启用，但判据有已知局限。**
 
     原判据（方案 §8.2 E）：CC 显示在跑（sessions 里有非零活跃计数），但
     max_last_ts 已经很久（CC_STALE_MS，3 分钟）没动 → 判卡死。
@@ -4031,11 +4347,12 @@ def check_cc_stalled(human, group_id, sessions, cfg, now_ms, cc):
         lock 和 session.json 是一起写的、mtime 完全相同，不是独立心跳，
         救不了上面第一种情况。
 
-    所以这条告警先禁用，生产跑其余六类。它一直是"仅断言+回放、生产未触发过"，
+    2026-09-15 按生产要求重新启用。它一直是"仅断言+回放、生产未触发过"，
     不是因为 CC 从不卡死，而是因为它排在 A 之后、还要走到 idle 分支，多数时候
-    前面先返回了 —— 一旦顺序或条件变化，它第一个报出来的很可能就是残留计数误报。
+    前面先返回了。启用后若出现告警，必须结合进程、源码文件 mtime 和 CC 日志复核，
+    因为残留计数仍可能造成误报。
 
-    重新启用前要做的事（按可信度排序）：
+    后续应改进的方向（按可信度排序）：
       1. 换判据：看项目源码目录 <项目>/src 下真实文件的 mtime。CC 在干活必然
          碰文件，文件系统比记账字段可信。代价是要扫目录，比读一个 JSON 贵。
       2. 或保留现判据但加护栏：要求 max_last_ts 不早于对应数字人会话本轮起点
@@ -4062,8 +4379,11 @@ def check_cc_stalled(human, group_id, sessions, cfg, now_ms, cc):
         "sessionKey": da["sessionKey"],
         "channel": da["channel"],
         "target": da["target"],
-        "text": (f"⚠️ {da_name} 的代码执行子任务无响应"
-                 f"（已 {fmt_duration(now_ms - last_touch)}没有进展）。"
+        # 说"最后一次活动在 X 前"而不是"无响应（已 X 没有进展）"：巡检器读到的
+        # 就是 session.json 的最后触碰时刻，如实说这个，不替它下"无响应"的判断。
+        # （这条判据当前被 CC_STALLED_ENABLED=False 关着，见 check_cc_stalled。）
+        "text": (f"⚠️ {da_name} 的代码执行子任务最后一次活动在 "
+                 f"{fmt_duration(now_ms - last_touch)}前。"
                  f"\n　　{recovery_hint(cfg)}"),
         "detail": {
             "gate": {"key": "CC_STALE_MS", "measured": now_ms - last_touch},
@@ -4112,7 +4432,13 @@ def check_user_not_replied(human, group_id, sessions, cfg, now_ms, transcript):
         return None
 
     da_name = (human.get("agentNames") or {}).get(human["daId"], human["daId"])
-    swallowed_gap = (da.get("lastInteractionAt") or 0) - t_user
+    # ⚠️ 必须过 snapshot_ts：lastInteractionAt 是快照，回放历史时刻时是未来数据。
+    # 实测（2026-09-14 回放素材包）不裁的话 5 个回放时刻**全部**误报"消息被吞" ——
+    # 素材采集于 22:06，拿它减 15:16 的 tUser 得 6.8 小时，分钟级阈值必然过。
+    # 裁成 0 后 gap 为负、A 分支不成立，自然落到子形态 B 去判（B 用的是消息流时刻，
+    # 回放安全）；代价是"消息被吞"这个形态在回放里判不出来 —— 但那本来就没有可信素材。
+    last_interaction = snapshot_ts(da.get("lastInteractionAt"), now_ms)
+    swallowed_gap = last_interaction - t_user
 
     # ---- 子形态 A：消息被吞 ----
     if swallowed_gap > threshold(cfg, "MSG_SWALLOWED_MS"):
@@ -4124,9 +4450,17 @@ def check_user_not_replied(human, group_id, sessions, cfg, now_ms, transcript):
             "sessionKey": da["sessionKey"],
             "channel": da["channel"],
             "target": da["target"],
-            "text": (f"⚠️ {da_name} 收到了您的消息，但没能开始处理"
-                     f"（已积压 {fmt_duration(now_ms - t_user)}），需要人工介入。\n"
-                     f"　　继续发消息可能同样没有反应。"),
+            # 措辞取"网关侧收到了、但没进会话"这个客观事实，不说"没能处理"——
+            # 后者读起来像在指责数字人，而这个形态的成因在链路（消息没落进会话），
+            # 不在数字人的处理能力。
+            #
+            # ⚠️ 这一条**刻意不用 recovery_hint**：消息根本没进会话，唤起走的是同一条
+            # 链路、未必接得上，承诺"已自动唤起继续处理"是在保证一件可能做不到的事。
+            # 所以如实说明"这条消息可能没送到它那里"，让用户知道换个方式确认，
+            # 而不是干等 —— 但也不写"需要人工介入"那种把责任整体推过去的说法。
+            "text": (f"⚠️ {da_name} 的会话没有收到您 {fmt_duration(now_ms - t_user)}前"
+                     f"发出的消息（网关侧已收到，但没有进入会话）。\n"
+                     f"　　这条消息可能没送到它那里，建议换个方式确认。"),
             "detail": {
                 "gate": {"key": "MSG_SWALLOWED_MS", "measured": swallowed_gap},
                 "form": "swallowed",
@@ -4151,7 +4485,10 @@ def check_user_not_replied(human, group_id, sessions, cfg, now_ms, transcript):
         "sessionKey": da["sessionKey"],
         "channel": da["channel"],
         "target": da["target"],
-        "text": (f"⚠️ {da_name} 可能没能回复您 {fmt_duration(quiet_ms)}前的消息。"
+        # "尚未回应"而不是"没能回复"：前者是状态，后者读起来像在断定它做不到。
+        # 这个形态下消息确实进了会话，只是还没回话 —— 唤起能接上，尾句照常交给
+        # recovery_hint 说"已自动唤起"。
+        "text": (f"⚠️ {da_name} 对您 {fmt_duration(quiet_ms)}前的消息尚未回应。"
                  f"\n　　{recovery_hint(cfg)}"),
         "detail": {
             "gate": {"key": "USER_REPLY_ACK_MS", "measured": quiet_ms},
@@ -4159,6 +4496,8 @@ def check_user_not_replied(human, group_id, sessions, cfg, now_ms, transcript):
             "tUser": t_user,
             "tDaReply": transcript["tDaReply"],
             "quietMs": quiet_ms,
+            # 记盘上的原值（不是 snapshot_ts 裁过的）—— detail 是排查用的事实留痕，
+            # 要能回答"当时盘上到底写着什么"。判定用的值在 gate.measured 里。
             "lastInteractionAt": da.get("lastInteractionAt") or 0,
         },
     }
@@ -4254,6 +4593,35 @@ def check_model_error(human, group_id, sessions, cfg, now_ms, outcome, transcrip
     # 12:01/12:06 都 status=success，但 tDaReply 没动，于是一直告到下午。
     if (anchor and outcome.get("status") == "success"
             and (outcome.get("endedTs") or 0) > anchor):
+        return None
+
+    # 自愈判定三：出错之后**切了模型、并且真的又动起来了** → openclaw 的 failover
+    # 生效了，不报。
+    #
+    # ⚠️ 这条是 2026-09-15 补的，起因是线上群 10233893878 那条告警：
+    # 13:19:38 429 → 巡检器 13:20:42 告警并唤起。那一次**报得对**（没有 failover、
+    # 数字人真的断了 64 秒）。但同一份素材里"429 之后 0~3 秒就切到 GLM-5.3 / deepseek
+    # 并继续跑"的场景有 **372 次** —— 那些都是 openclaw 正常的限流退避，不该报。
+    #
+    # 之前没天天误报，靠的是两个偶然：30 秒宽限期（切换往往 3 秒内完成，30 秒后
+    # 常常已经跑出新内容触发了判定一/二）+ 30 分钟同类冷却。**那是靠时间窗侥幸挡住，
+    # 不是判据挡住的** —— failover 之后那一轮若收尾是 NO_REPLY 或纯对内派活，
+    # 判定一/二都不成立，就会像 13:20 那次一样发出去。
+    #
+    # **为什么要"切了模型"和"之后有动作"两个条件都满足**，而不是只看切没切：
+    # 实测过切到 embedding 模型（Qwen3-Embedding-8B，不能做对话补全）后数字人彻底
+    # 哑掉的事故（MEMORY 第 6 件事 / 2026-08-22 13:16）。那种形态下 model-snapshot
+    # 有、但之后一条 assistant 动作都没有 —— 只看"切过模型"会把真故障判成自愈，
+    # 那是最危险的方向（漏报）。这份素材里也有一例：09-09 17:41:55 切到
+    # Qwen3-Embedding-8B。
+    #
+    # tDaAct 而不是 tDaReply：failover 之后往往是继续调工具干活、并不对客
+    # （13:21:10 那次恢复后第一件事就是 `<toolCall:exec>` 继续轮询 CC 进程）。
+    # 要求"又对客了"会把这类正常恢复漏掉，那正是判定一盖不到的缺口。
+    switched_after = [m for m in (transcript.get("modelChain") or [])
+                      if (m.get("ts") or 0) > anchor]
+    acted_after = (transcript.get("tDaAct") or 0) > anchor
+    if anchor and switched_after and acted_after:
         return None
 
     # 算不出锚点时退回群里最近一次活动时间，免得因为拿不到时刻就永远不告警
