@@ -57,6 +57,7 @@
 """
 
 import argparse
+import copy
 import glob
 import json
 import os
@@ -83,6 +84,12 @@ DEFAULT_CONFIG = {
     "enabled": True,     # 总开关，false 时启动即退出
     "interval": 30000,   # 轮询间隔（毫秒），方案默认 30s
 }
+
+# 常驻生产进程的最小轮询间隔。线上曾残留 interval=5000 的联调配置，等于每天完整
+# 扫描 17280 轮；实例/群变多后会持续打开 SQLite、解析 JSON，CPU 被无意义放大。
+# 命令行显式传 --interval 仍允许更短，供人工联调；配置文件则按生产下限兜底。
+MIN_PRODUCTION_INTERVAL_MS = 30 * 1000
+MIN_OVERLOAD_BACKOFF_MS = 1000
 
 
 def log(msg):
@@ -452,7 +459,10 @@ def inspect_once(cfg, round_no):
     解析时抛 TypeError，当时异常兜在轮级别，结果**那一轮 4 个群全被跳过**——
     一条坏数据让整台机器的巡检停摆两轮。
     """
+    wall_started = time.monotonic()
+    cpu_started = time.process_time()
     humans = discover_digital_humans()
+    discovery_ms = (time.monotonic() - wall_started) * 1000
     delivery = [h for h in humans if h["isDelivery"]]
     notified = NotifiedStore()
     scanned = skipped = failed = 0
@@ -488,12 +498,15 @@ def inspect_once(cfg, round_no):
     notified.save()
 
     mode = "dryRun" if (cfg or {}).get("dryRun", True) else "实发"
+    wall_ms = (time.monotonic() - wall_started) * 1000
+    cpu_ms = (time.process_time() - cpu_started) * 1000
     log(f"第 {round_no} 轮［{mode}］：交付数字人 {len(delivery)} 个 / 巡检群 {scanned} 个"
         f"（白名单外跳过 {skipped} 个"
         f"{f'，其中屏蔽 {len(blocked_ids)} 个：' + '、'.join(blocked_ids) if blocked_ids else ''}"
         f"{f'，出错 {failed} 个' if failed else ''}）"
         f"→ 动作 {len(acted)} 条"
-        f"{f'，被降噪拦下 {len(suppressed)} 条' if suppressed else ''}")
+        f"{f'，被降噪拦下 {len(suppressed)} 条' if suppressed else ''}"
+        f"；耗时 {wall_ms:.0f}ms（发现 {discovery_ms:.0f}ms，CPU {cpu_ms:.0f}ms）")
     # 真发/发失败每次都打；被闸门拦下的只在**变化时**打一次，避免持续静默期间刷屏
     for line in acted:
         log(f"  {line}")
@@ -1085,12 +1098,51 @@ def _query(db_path, sql, params=()):
         conn.close()
 
 
-def iter_events_reverse(db_path, table, session_id, limit=EVENT_SCAN_LIMIT):
-    """倒序读某个会话的事件，yield (event_json 字符串, 已读条数)。
+# 事件摘要缓存：SQLite 的 `(session_id, seq)` 主键让“最新 seq”查询很便宜。绝大多数
+# 5/30 秒轮询之间事件表没有变化，没必要每轮重新搬运和解析最多 1000 条 JSON。
+# 缓存按 db/session/limit 隔离，revision 变化即重算；回放 as_of 不使用，避免缓存历史
+# 截面。返回前 deepcopy，因为 decide 会给 transcript 临时补 cc 字段。
+_EVENT_SUMMARY_CACHE = {
+    "transcript": {},
+    "marker": {},
+    "outcome": {},
+    "outcome_lite": {},
+}
+EVENT_CACHE_MAX_ENTRIES = 2048
 
-    对应旧实现的 iter_lines_reverse：调用方一样是"倒序遍历、找到答案就停"，
-    所以这里用 LIMIT 一次取回上限条数、在 Python 侧逐条 yield —— 调用方 break 之后
-    剩下的行不会被解析（json 解析才是真正的开销，SQL 取行很便宜）。
+
+def _event_revision(db_path, table, session_id):
+    """返回会话事件表最新 seq；读不到返回 None。只取索引尾部，不读取 event_json。"""
+    if table not in ("transcript_events", "trajectory_runtime_events"):
+        return None
+    rows = _query(
+        db_path,
+        f"SELECT seq FROM {table} WHERE session_id = ? ORDER BY seq DESC LIMIT 1",
+        (session_id,),
+    )
+    return int(rows[0][0]) if rows else -1
+
+
+def _cache_get(bucket, identity, revision):
+    item = _EVENT_SUMMARY_CACHE[bucket].get(identity)
+    if item and item[0] == revision:
+        return copy.deepcopy(item[1])
+    return None
+
+
+def _cache_put(bucket, identity, revision, value):
+    cache = _EVENT_SUMMARY_CACHE[bucket]
+    if len(cache) >= EVENT_CACHE_MAX_ENTRIES and identity not in cache:
+        cache.clear()  # 防长期运行时会话不断换 sid 导致无界增长；清空只影响性能，不影响结果
+    cache[identity] = (revision, copy.deepcopy(value))
+
+
+def iter_events_reverse(db_path, table, session_id, limit=EVENT_SCAN_LIMIT):
+    """倒序流式读取某个会话的事件，yield (event_json 字符串, 已读条数)。
+
+    必须直接迭代 SQLite cursor，不能复用 `_query(...).fetchall()`。绝大多数调用方只需
+    最新 1~几十条就会 break；先 fetchall 1000 条会把大量正文 JSON 无条件复制进
+    Python，群和轮询频率一高就浪费 CPU/内存。生成器关闭时 finally 会立即关连接。
 
     table 只允许两个白名单值，避免把外部输入拼进 SQL。
     """
@@ -1098,15 +1150,22 @@ def iter_events_reverse(db_path, table, session_id, limit=EVENT_SCAN_LIMIT):
         return
     if not db_path or not session_id:
         return
-    rows = _query(
-        db_path,
-        f"SELECT event_json FROM {table} WHERE session_id = ? ORDER BY seq DESC LIMIT ?",
-        (session_id, int(limit)),
-    )
-    for i, row in enumerate(rows, 1):
-        raw = row[0]
-        if isinstance(raw, str) and raw.strip():
-            yield raw, i
+    conn = _connect_ro(db_path)
+    if conn is None:
+        return
+    try:
+        cursor = conn.execute(
+            f"SELECT event_json FROM {table} WHERE session_id = ? ORDER BY seq DESC LIMIT ?",
+            (session_id, int(limit)),
+        )
+        for i, row in enumerate(cursor, 1):
+            raw = row[0]
+            if isinstance(raw, str) and raw.strip():
+                yield raw, i
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
 
 
 def latest_event_ts(session, as_of_ms, scan_limit=EVENT_SCAN_LIMIT):
@@ -1181,6 +1240,13 @@ def latest_run_marker(session, as_of_ms=None, scan_limit=EVENT_SCAN_LIMIT):
     db_path, session_id = session_ref(session)
     if not db_path or not session_id:
         return out
+    cache_identity = cache_revision = None
+    if as_of_ms is None:
+        cache_identity = (db_path, session_id, int(scan_limit))
+        cache_revision = _event_revision(db_path, "trajectory_runtime_events", session_id)
+        cached = _cache_get("marker", cache_identity, cache_revision)
+        if cached is not None:
+            return cached
     for raw, scanned in iter_events_reverse(db_path, "trajectory_runtime_events",
                                             session_id, limit=scan_limit):
         out["scannedEvents"] = scanned
@@ -1193,7 +1259,11 @@ def latest_run_marker(session, as_of_ms=None, scan_limit=EVENT_SCAN_LIMIT):
         if as_of_ms is not None and ts > as_of_ms:
             continue
         out.update(marker=event["type"], ts=ts, runId=event.get("runId") or "")
+        if cache_identity is not None:
+            _cache_put("marker", cache_identity, cache_revision, out)
         return out
+    if cache_identity is not None:
+        _cache_put("marker", cache_identity, cache_revision, out)
     return out
 
 
@@ -1781,6 +1851,13 @@ def scan_transcript(session, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMIT):
     db_path, session_id = session_ref(session)
     if not db_path or not session_id:
         return out
+    cache_identity = cache_revision = None
+    if as_of_ms is None:
+        cache_identity = (db_path, session_id, int(scan_limit))
+        cache_revision = _event_revision(db_path, "transcript_events", session_id)
+        cached = _cache_get("transcript", cache_identity, cache_revision)
+        if cached is not None:
+            return cached
 
     exec_results = {}     # toolCallId -> (是否成功, 结果落盘时刻)
     if True:
@@ -1923,6 +2000,8 @@ def scan_transcript(session, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMIT):
     # 单独物化成字段是给"进展锚点"用的（见 progress_anchor）：回报是实质进展，
     # 但它既不是用户发言也不是对客，原来两个锚点都盖不住它。
     out["tSubReport"] = max((out["recvFrom"] or {}).values(), default=0)
+    if cache_identity is not None:
+        _cache_put("transcript", cache_identity, cache_revision, out)
     return out
 
 
@@ -3033,6 +3112,13 @@ def latest_run_outcome_lite(session, as_of_ms=None, scan_bytes=EVENT_SCAN_LIMIT)
     db_path, session_id = session_ref(session)
     if not db_path or not session_id:
         return None
+    cache_identity = cache_revision = None
+    if as_of_ms is None:
+        cache_identity = (db_path, session_id, int(scan_bytes))
+        cache_revision = _event_revision(db_path, "trajectory_runtime_events", session_id)
+        cached = _cache_get("outcome_lite", cache_identity, cache_revision)
+        if cached is not None:
+            return cached
     last = None
     for raw, _ in iter_events_reverse(db_path, "trajectory_runtime_events",
                                       session_id, limit=scan_bytes):
@@ -3055,6 +3141,8 @@ def latest_run_outcome_lite(session, as_of_ms=None, scan_bytes=EVENT_SCAN_LIMIT)
             "externalAbort": data.get(EXTERNAL_ABORT_FLAG) is True,
         }
         break        # 倒序第一个（不晚于 as_of）的就是该时刻的最新
+    if cache_identity is not None:
+        _cache_put("outcome_lite", cache_identity, cache_revision, last)
     return last
 
 
@@ -3907,6 +3995,13 @@ def latest_run_outcome(session, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMIT)
     db_path, session_id = session_ref(session)
     if not db_path or not session_id:
         return out
+    cache_identity = cache_revision = None
+    if as_of_ms is None:
+        cache_identity = (db_path, session_id, int(scan_limit))
+        cache_revision = _event_revision(db_path, "trajectory_runtime_events", session_id)
+        cached = _cache_get("outcome", cache_identity, cache_revision)
+        if cached is not None:
+            return cached
     target_run = None
     if True:
         for raw, _ in iter_events_reverse(db_path, "trajectory_runtime_events",
@@ -3953,6 +4048,8 @@ def latest_run_outcome(session, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMIT)
             for field, label in MODEL_ERROR_FLAGS.items():
                 if data.get(field) is True and (field, label) not in out["flags"]:
                     out["flags"].append((field, label))
+    if cache_identity is not None:
+        _cache_put("outcome", cache_identity, cache_revision, out)
     return out
 
 
@@ -4786,6 +4883,12 @@ def main():
     if interval_ms <= 0:
         log(f"轮询间隔非法（interval={interval_ms}），必须是正整数毫秒。")
         return 1
+    if args.interval is None and interval_ms < MIN_PRODUCTION_INTERVAL_MS:
+        log(f"配置轮询间隔 {interval_ms / 1000:g}s 低于生产下限 "
+            f"{MIN_PRODUCTION_INTERVAL_MS / 1000:g}s，已自动按生产下限运行；"
+            "人工联调如确需高频，请显式传 --interval。")
+        interval_ms = MIN_PRODUCTION_INTERVAL_MS
+        cfg["interval"] = interval_ms
 
     if args.once:
         inspect_once(cfg, 1)
@@ -4829,6 +4932,11 @@ def main():
                 cfg["interval"] = args.interval
             new_interval = int(cfg.get("interval") or 0)
             if new_interval > 0:
+                if args.interval is None and new_interval < MIN_PRODUCTION_INTERVAL_MS:
+                    log(f"热加载的轮询间隔 {new_interval / 1000:g}s 低于生产下限，"
+                        f"继续按 {MIN_PRODUCTION_INTERVAL_MS / 1000:g}s 运行")
+                    new_interval = MIN_PRODUCTION_INTERVAL_MS
+                    cfg["interval"] = new_interval
                 interval_ms = new_interval
             apply_log_settings(cfg)     # log 段也支持热改，否则跟"热加载"自相矛盾
             log(f"配置已重新加载：间隔 {interval_ms / 1000:g}s、"
@@ -4854,9 +4962,15 @@ def main():
                 log(f"代码有语法错误，继续用当前版本跑（改好后自动重载）：{err}")
 
         # 减掉本轮自己的耗时，保证是"每 N 秒一轮"而不是"每轮之间隔 N 秒"。
+        # 一轮若已超过 interval，旧代码 wait(0) 后立刻再扫，数据量越大越容易形成
+        # 无休眠死循环并持续占满 CPU。超载时至少退避 1 秒，让网关和 SQLite 有喘息。
         # wait() 收到停止信号会立刻返回，不用等睡满。
         elapsed = time.monotonic() - started
-        _stop.wait(max(0.0, interval_ms / 1000 - elapsed))
+        remaining = interval_ms / 1000 - elapsed
+        if remaining <= 0:
+            log(f"本轮耗时 {elapsed:.1f}s，已超过 {interval_ms / 1000:g}s 轮询间隔，"
+                f"退避 {MIN_OVERLOAD_BACKOFF_MS / 1000:g}s 后再巡检")
+        _stop.wait(max(MIN_OVERLOAD_BACKOFF_MS / 1000, remaining))
     log(f"已跑 {round_no} 轮，退出。")
     return 0
 
