@@ -1350,11 +1350,18 @@ def judge_running(sessions, as_of_ms=None, scan_limit=TRAJECTORY_SCAN_LIMIT, cc=
         # 仲裁只在生产实时（as_of_ms 为 None）生效：回放时快照字段是"未来数据"
         # （最终快照的触碰时刻几乎必然晚于历史 ended），仲裁会把回放的 running
         # 全部误杀 —— verify 的 21 条回放断言就是这么挂的。
-        if (as_of_ms is None and traj_marker == "session.ended" and traj_ts
+        # 只能撤销“数字人本体 status=running”这一条陈旧快照，不能顺手覆盖
+        # 基础 Agent / CC 的独立 running 证据。2026-09-16 群 10234007928 实测：
+        # 仓颉 status=running 时仍发出了“会话没有收到消息”，根因形态就是外层被错误
+        # 仲裁成 idle 后进入了中断告警分支。只要还有别的 running 命中，整群就在推进。
+        stale_da_status_only = hits == ["信号1 数字人 status=running"]
+        if (as_of_ms is None and stale_da_status_only
+                and traj_marker == "session.ended" and traj_ts
                 and da_touch_at and da_touch_at < traj_ts):
             evidence.append(
                 f"仲裁：trajectory ended({fmt_ts(traj_ts)}) 之后快照再无触碰"
-                f"（最近触碰 {fmt_ts(da_touch_at)}）→ status=running 是残留，判 idle"
+                f"（最近触碰 {fmt_ts(da_touch_at)}）→ 仅有的数字人 status=running 是残留，"
+                "判 idle"
             )
             state = STATE_IDLE
         else:
@@ -2886,6 +2893,14 @@ def still_relevant(human, group_id, sessions, event, cfg, now_ms):
         if newer > (detail.get("quietSince") or 0):
             return False, (f"期间已有新的进展（{fmt_ts(newer)}），"
                            f"静默已被打破，提醒已过时")
+        return True, ""
+
+    if event["type"] == "ALERT_USER_NOT_REPLIED":
+        # 判定到投递之间基础 Agent 可能已经接手。无论是“消息被吞”还是“收到没回”，
+        # 只要整群当前已恢复 running，就不应再向用户播报中断类结论。
+        verdict = judge_running(fresh_sessions)
+        if verdict["state"] == STATE_RUNNING:
+            return False, "数字人或基础 Agent 已在运行，用户未回复告警已过时"
         return True, ""
 
     if event["type"] == "ALERT_MODEL_ERROR":
@@ -4429,6 +4444,13 @@ def check_user_not_replied(human, group_id, sessions, cfg, now_ms, transcript):
     if transcript["tDispatch"] > t_user:
         return None
     if transcript["lastNoReply"]:
+        return None
+
+    # 防御性闸门：基础 Agent 仍在运行时，不能向用户声称“消息没有进入会话”。
+    # 正常情况下 decide() 的运行态分流已经会挡住；这里再守一次，是为了防止运行态
+    # 仲裁回归或调用方绕过 decide()。只认真实承载派活的 group-virtual 会话，避免
+    # 同一 Agent 的空壳 group 会话覆盖状态。
+    if any(status == "running" for status in sub_status_by_agent(sessions).values()):
         return None
 
     da_name = (human.get("agentNames") or {}).get(human["daId"], human["daId"])
