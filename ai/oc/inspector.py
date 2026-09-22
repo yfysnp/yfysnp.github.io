@@ -2027,6 +2027,59 @@ def progress_anchor(transcript):
                transcript.get("tSubReport") or 0)
 
 
+def msg_stream_anchor(transcript):
+    """消息流里"这个会话最后一次真的动过"的时刻 = max(tUser, tDaReply, tDaAct)。
+
+    **只给「消息被吞」（铁律二-1 子形态 A）当比较基准用。** 那条判据问的是
+    "网关记的 lastInteractionAt 比消息流领先多少" —— 领先很多说明网关收了消息、
+    但它没落进会话。比较基准必须是"消息流最后一次有记录"，不是"用户最后一次说话"。
+
+    ⚠️ 2026-09-21 误报根因：原来拿裸 tUser 当基准。会话正常推进十几分钟、数字人也
+    回了话之后，lastInteractionAt 自然一路变新，减掉那个早就过去的 tUser 必然冲破
+    2 分钟阈值 —— 而 A 分支排在 B 分支（"数字人回过了就不报"）**之前**，那道豁免
+    根本轮不到。
+
+    线上确切事故（2026-09-20 群 10232667210，线上侧独立复现的同一个 bug）：
+    22:45 用户点"按现状直接结项"，23:29 result 卡经 send-user-message.py 送达，
+    把 lastInteractionAt 推到 23:29；23:35~37 巡检拿它减 tUser=22:45 得 52 分钟，
+    直接命中 2 分钟阈值，误报"会话没有收到您 52 分钟前发出的消息"。
+
+    素材包实测（69 个有用户发言的群）：
+        锚点 = tUser                      → 29 个群触发，其中 4 个明确已回过话
+        锚点 = max(tUser, tDaReply)       →  6 个
+        锚点 = max(tUser, tDaReply,tDaAct)→  0 个
+    拿 latest_event_ts（直接读两张事件表的最后一个事件）做锚点同样是 0，说明那 6 个
+    差额群确实是"会话在动但没对客"，被 tDaAct 正确豁免掉了。
+
+    **为什么必须带 tDaAct、不能只到 tDaReply**：failover 之后、以及长任务执行期间，
+    数字人往往是连着调工具干活并不对客（tDaReply 不动），但消息流一直在写。少了它
+    那 6 个群就是误报。tDaAct 的语义正是"最后一次 assistant 动作，文本或工具调用都算、
+    不要求对客"（见 scan_transcript）。
+
+    ⚠️ **也不能改写成 `and tDaReply < tUser` 这种布尔豁免**（线上提过这个方案）。
+    它只豁免"已经对客过"，漏掉"收到消息后立刻埋头调工具、还没来得及对客"这一类：
+    那时 tDaReply 确实小于 tUser，豁免不成立，于是照样报被吞。素材实测这个形态占
+    1060 条真人消息里的 220 条（21%），长任务和交付流程里是常态；群 10233370555 就是
+    活例子（tDaReply 比 tUser 还早 22 秒、之后干了 76 分钟活，裸 gap 4586 秒、
+    锚点 gap 0.068 秒）。
+    **错的方向还特别糟**：A 形态的文案是"会话没有收到您的消息"（事实错误 —— 消息
+    进了会话），而且 A 刻意不走 recovery_hint，于是连唤起这条自愈路径一起被关掉，
+    本该由 B 形态"尚未回应 + 已自动唤起"处理的场景被降级成只让用户去看侧边栏。
+    换锚点是那个布尔条件的超集：tDaReply >= tUser 时锚点必然 >= tUser，gap 只会更小。
+
+    **判据本来要抓的东西没有削弱**：2026-08-22 那次降级到 Qwen3-Embedding-8B 之后
+    数字人彻底哑掉，三个时刻全部冻结在故障时刻，lastInteractionAt 减它们照样冲破
+    阈值。被豁免掉的只有"会话明明还在动"这一类。
+
+    ⚠️ 不复用 progress_anchor：它含 tSubReport（基础 Agent 回报，走的是跨会话链路），
+    答的是"这单活有没有进展"；这里要答的是"数字人自己的消息流有没有在写"，
+    是两个问题。同一个词在不同层级指的不是一回事（MEMORY 第 16 件事的边界）。
+    """
+    return max(transcript.get("tUser") or 0,
+               transcript.get("tDaReply") or 0,
+               transcript.get("tDaAct") or 0)
+
+
 # 工具名 → 人话，用于"正在干啥"文案。
 #
 # 这些信息来自消息流 <sid>.jsonl，它是**实时写入**的 —— 实测（2026-08-22 11:49 那次
@@ -2406,14 +2459,18 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
             trace.append(f"→ 命中 {event['type']}：{event['detail']['projectKey']}")
             return [event], trace
 
-        # 和 check_user_not_replied 用同一把尺子（snapshot_ts 裁掉未来值）——
-        # trace 里显示的数字必须和判据实际用的一致，否则回放时"trace 说差 6.8 小时、
-        # 判据却没报"会让人以为判据坏了。
-        gap = (snapshot_ts(da.get("lastInteractionAt"), now_ms) - transcript["tUser"]) if da else 0
+        # 和 check_user_not_replied 用同一把尺子 —— snapshot_ts 裁掉未来值，
+        # 且基准同样走 msg_stream_anchor（不是裸 tUser）。trace 里显示的数字必须和
+        # 判据实际用的一致，否则"trace 说差 6.8 小时、判据却没报"会让人以为判据坏了。
+        # 2026-09-21 换锚点时这一处一起改：漏了它就是同一件事两把尺子（MEMORY 原则 7）。
+        stream_anchor = msg_stream_anchor(transcript)
+        gap = (snapshot_ts(da.get("lastInteractionAt"), now_ms) - stream_anchor) if da else 0
         trace.append(
             f"　二-1 用户消息未获回复：T_user={fmt_ts(transcript['tUser'])}"
             f"　T_da_reply={fmt_ts(transcript['tDaReply'])}"
-            f"　网关 lastInteractionAt 比消息流晚 {gap / 1000:+.0f} 秒"
+            f"　T_da_act={fmt_ts(transcript.get('tDaAct') or 0)}"
+            f"　网关 lastInteractionAt 比消息流末次记录（{fmt_ts(stream_anchor)}）"
+            f"晚 {gap / 1000:+.0f} 秒"
             f"　派活={fmt_ts(transcript['tDispatch'])}"
             f"　明示不对客={transcript['lastNoReply']}"
         )
@@ -4521,6 +4578,8 @@ def check_user_not_replied(human, group_id, sessions, cfg, now_ms, transcript):
       tUser=13:16:29，差 6 分钟。
       正常情况这两个值只差 0~1 秒（实测 4 个群分别是 -1/-0/-0/-1 秒），所以差很多
       是可信信号。
+      ⚠️ 比较基准是 **msg_stream_anchor()（会话最后一次真的动过）**，不是裸 tUser
+      —— 详见该函数的 docstring（2026-09-21 误报根因）。
 
     B 收到没回（方案原本设想的形态）
       消息进了会话，但数字人一直没给用户回话。
@@ -4557,7 +4616,10 @@ def check_user_not_replied(human, group_id, sessions, cfg, now_ms, transcript):
     # 裁成 0 后 gap 为负、A 分支不成立，自然落到子形态 B 去判（B 用的是消息流时刻，
     # 回放安全）；代价是"消息被吞"这个形态在回放里判不出来 —— 但那本来就没有可信素材。
     last_interaction = snapshot_ts(da.get("lastInteractionAt"), now_ms)
-    swallowed_gap = last_interaction - t_user
+    # 基准是"消息流最后一次有记录"，不是裸 tUser（2026-09-21 误报修复，
+    # 素材实测 29 → 0 个误报）。理由见 msg_stream_anchor 的 docstring。
+    stream_anchor = msg_stream_anchor(transcript)
+    swallowed_gap = last_interaction - stream_anchor
 
     # ---- 子形态 A：消息被吞 ----
     if swallowed_gap > threshold(cfg, "MSG_SWALLOWED_MS"):
@@ -4589,6 +4651,10 @@ def check_user_not_replied(human, group_id, sessions, cfg, now_ms, transcript):
                 "lastInteractionAt": da.get("lastInteractionAt") or 0,
                 "gapMs": swallowed_gap,
                 "tDaReply": transcript["tDaReply"],
+                # 凭哪个时刻算出 gap 的 —— 排查"这条为什么报/为什么不报"时，
+                # 光看 tUser 会对不上账（基准可能被 tDaReply/tDaAct 顶新了）。
+                "anchorTs": stream_anchor,
+                "tDaAct": transcript.get("tDaAct") or 0,
             },
         }
 
