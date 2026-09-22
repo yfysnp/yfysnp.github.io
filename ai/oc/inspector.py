@@ -476,6 +476,18 @@ def inspect_once(cfg, round_no):
             log(f"数字人 {human['daId']} 不在数字人白名单（das.include），本轮跳过")
             skipped += len(human["groups"])
             continue
+        # 缺编排类基础 Agent → 这个实例不可能在跑交付，整实例跳过。
+        # 每轮点名（不做"只在变化时打"的收敛）：和 groups.exclude 同一个理由 ——
+        # 这是"整个实例静默"的状态，必须一直看得见，否则过几天就忘了某台机器
+        # 压根没在巡检，"怎么这个实例从来不报"要查很久。
+        if human["missingCoreAgents"]:
+            names = human.get("agentNames") or {}
+            lacking = "、".join(f"{names.get(a, a)}（{a}）"
+                               for a in human["missingCoreAgents"])
+            log(f"数字人 {human['daId']} 缺交付核心 Agent：{lacking} "
+                f"→ 不具备交付能力，整实例跳过（{len(human['groups'])} 个群）")
+            skipped += len(human["groups"])
+            continue
         for group_id, sessions in sorted(human["groups"].items()):
             if not group_allowed(cfg, group_id):
                 # 屏蔽是人为按下的开关，得让它一直看得见 —— 否则过几天就忘了
@@ -611,6 +623,96 @@ def is_delivery_agent(inst_dir, da_id):
     """判断是不是交付数字人：private-experts/<da>/workflow/ 下有 zqjz- 开头的
     工作流定义文件（能力实存）。目录不存在、没有匹配文件都算不是。"""
     return bool(delivery_workflows(inst_dir, da_id))
+
+
+# 交付链路的**编排类**基础 Agent。少了它们，工作流定义摆在那里也跑不起来：
+#   weizheng（魏征） 需求/澄清/确认/回报 —— 几乎每个工作流的入口节点都是它
+#   wolong（卧龙）   项目初始化、派发校验、结项 —— 交付流程的骨架
+# 实测（本机 zqjzszr）4 个工作流定义、31 个节点里，这两个 agent 覆盖：
+#   zqjz-full-delivery              wolong×4 weizheng×2
+#   zqjz-delivery-clarify-standalone wolong×3 weizheng×1
+#   zqjz-bugfix-flow                wolong×3
+#   zqjz-test-order-light-clarify   wolong×1 weizheng×7
+# 即**每个交付工作流都至少要用到其中一个**，两个都没有就不可能在跑交付。
+#
+# ⚠️ 为什么只挑这两个、不要求全部 5 个（还有 shenkuo/maliang/cangjie）：
+# 后三个是按单子类型可选的 —— 纯前端的单子不派 shenkuo，纯后端的不派 maliang，
+# 不带测试的不派 cangjie。要求全部在场会把只做部分能力的实例误判成"不巡检"，
+# 那是漏报方向（该报的故障一条都不报），比多巡检一个空实例严重得多。
+DELIVERY_CORE_AGENTS = ("weizheng", "wolong")
+
+
+def configured_agents(inst_dir):
+    """这个实例声明了哪些基础 Agent，返回 agentId 集合；读不到返回空集合。
+
+    数据源按可信度排序，取**第一个能读出非空结果**的：
+
+      ① openclaw.json 的 agents.entries / agents.list —— 权威声明，网关照它加载
+      ② templates/agents/*.json                      —— 模板，声明的伴生物
+      ③ agents/<id>/                                 —— 运行目录，跑过才有
+
+    ⚠️ **必须支持 `$include`**。实测本机 zqjzszr 的 `agents.entries` 整体就是
+    `{"$include": "openclaw_agents_list.json"}`，直接读 keys 只会拿到 `["$include"]`
+    这一个假 agent —— 那正是 MEMORY 里 9.2 适配踩过的坑（键注入）的另一个形态。
+
+    ⚠️ **不能只看 ③ 运行目录**。它是"跑过才有"，新装或刚重置的实例里 weizheng/wolong
+    配好了但目录还没建，只看 ③ 会把正常实例判成"缺 agent"→ 不巡检 → 漏报。
+    ①②③ 逐级回退的语义是"有没有被声明过"，不是"有没有跑过"。
+
+    ⚠️ **空集合要和"读不到"区分开**，由调用方决定怎么处理 —— 见
+    `missing_core_agents()` 为什么读不到时选择**照常巡检**。
+    """
+    # ① openclaw.json
+    cfg = json_object_from_file(os.path.join(inst_dir, "openclaw.json")) or {}
+    agents = cfg.get("agents")
+    if isinstance(agents, dict):
+        entries = agents.get("entries")
+        if isinstance(entries, dict):
+            include = entries.get("$include")
+            if isinstance(include, str) and include:
+                # $include 的路径相对实例目录
+                sub = json_object_from_file(os.path.join(inst_dir, include))
+                if isinstance(sub, dict) and sub:
+                    return {k for k in sub if isinstance(k, str) and not k.startswith("$")}
+            else:
+                ids = {k for k in entries if isinstance(k, str) and not k.startswith("$")}
+                if ids:
+                    return ids
+        # legacy：agents.list 是数组，id 在条目里
+        listed = agents.get("list")
+        if isinstance(listed, list):
+            ids = {a.get("id") for a in listed if isinstance(a, dict) and a.get("id")}
+            if ids:
+                return ids
+        if isinstance(listed, dict) and listed.get("id"):
+            return {listed["id"]}
+
+    # ② templates/agents/*.json（base-agent 是模板基类，不是 agent）
+    tmpl = {os.path.basename(p)[: -len(".json")]
+            for p in glob.glob(os.path.join(inst_dir, "templates", "agents", "*.json"))}
+    tmpl.discard("base-agent")
+    if tmpl:
+        return tmpl
+
+    # ③ agents/ 运行目录（点文件不算，实测目录里有 .DS_Store）
+    agents_dir = os.path.join(inst_dir, "agents")
+    if os.path.isdir(agents_dir):
+        return {name for name in os.listdir(agents_dir) if not name.startswith(".")}
+    return set()
+
+
+def missing_core_agents(inst_dir):
+    """交付核心 Agent 里缺了哪几个，返回排序后的列表；不缺或判不了返回空列表。
+
+    ⚠️ **读不到 agent 声明时返回空列表（= 照常巡检），不返回"全缺"。**
+    这是 MEMORY 原则 15「"不知道"不等于"没有"」：三个数据源全空只说明"这台机器的
+    配置形态我不认识"，不说明"这个实例真的没有 weizheng/wolong"。把"不知道"当成
+    "缺"会让整个实例静默失去监控 —— 漏报比多巡检一个空实例严重得多。
+    """
+    declared = configured_agents(inst_dir)
+    if not declared:
+        return []                        # 判不了 → 不拦，照常巡检
+    return sorted(set(DELIVERY_CORE_AGENTS) - declared)
 
 
 def activity_ts(entry):
@@ -834,8 +936,14 @@ def discover_digital_humans():
         "instDir": "/Users/x/.openclaw/zqjzszr",
         "isDelivery": True,          # 是否交付数字人
         "hasOwnSessions": True,      # 数字人本体是否跑过（agents/<da> 是否存在）
+        "missingCoreAgents": [],     # 缺了哪些交付核心 Agent（weizheng/wolong）
         "groups": {群号: [会话, ...]},
       }
+
+    ⚠️ `isDelivery` 为真**不代表要巡检** —— 还要 `missingCoreAgents` 为空。
+    过滤在 inspect_once 里做（那里有日志可以说明为什么跳过），不在这里直接剔掉：
+    实例本身仍要出现在 print_discovery 的表里，否则"这台机器怎么一个群都不巡"
+    会查不出原因。
     """
     humans = []
     for inst_dir in sorted(glob.glob(os.path.join(OPENCLAW_HOME, "*"))):
@@ -849,6 +957,7 @@ def discover_digital_humans():
             "instDir": inst_dir,
             "isDelivery": is_delivery_agent(inst_dir, da_id),
             "hasOwnSessions": os.path.isdir(os.path.join(inst_dir, "agents", da_id)),
+            "missingCoreAgents": missing_core_agents(inst_dir),
             "agentNames": load_agent_names(inst_dir),
             "sendScript": resolve_send_script(inst_dir, da_id),
             "groups": collect_group_sessions(inst_dir, da_id),
@@ -1458,11 +1567,19 @@ def print_discovery(cfg=None):
     for h in humans:
         flags = []
         flags.append("交付数字人 ✅" if h["isDelivery"] else "非交付数字人，不巡检 ⏭️")
+        if h["missingCoreAgents"]:
+            flags.append("缺交付核心 Agent，不巡检 ⏭️")
         if not h["hasOwnSessions"]:
             flags.append("本体未运行过")
         print(f"\n数字人 {h['daId']}　[{' | '.join(flags)}]")
         if not da_allowed(cfg, h["daId"]):
             print("  ⏭️ 数字人白名单外（das.include），不巡检")
+        if h["missingCoreAgents"]:
+            names = h.get("agentNames") or {}
+            lacking = "、".join(f"{names.get(a, a)}（{a}）" for a in h["missingCoreAgents"])
+            print(f"  ⏭️ 缺交付核心 Agent：{lacking}"
+                  f"　—— 交付工作流的入口/骨架节点全靠它们，缺了不可能在跑交付")
+            print(f"     本实例声明的 Agent：{sorted(configured_agents(h['instDir'])) or '读不到'}")
         print(f"  目录 {h['instDir']}")
         print(f"  发送脚本 {h['sendScript'] or '❌ 找不到（这个数字人发不出消息）'}")
         if not h["groups"]:
