@@ -62,6 +62,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -108,30 +109,114 @@ def log(msg):
     write_log_line(_log_file, line, _log_max_bytes, _log_keep, _log_keep_days)
 
 
-def write_log_line(path, line, max_bytes, keep, keep_days):
-    """把一行写进按天分文件的日志，顺带做大小轮转和按天清理。
+def log_content_day(path):
+    """这个日志文件里的内容属于哪一天（YYYY-MM-DD）；文件不存在返回空串。
 
-    两层留存并存，各管一件事：
-      按天分文件 —— 决定"这一天的日志在哪个文件里"，方便直接按日期查；
-      大小轮转   —— 兜"某一天异常地大"，同一天内再切成 -1/-2。
-    每次写都重算当天路径，跨零点自动落到新文件，不缓存句柄。
+    取**首行的时间戳**，不取 mtime —— mtime 是"最后写入时刻"，跨零点那一刻写进去的
+    那一行会把 mtime 推到新的一天，于是整个文件被判成属于新一天，归档时日期就错了。
+    首行时间戳才是"这批内容从哪天开始的"。
+
+    日志行形如 `[2026-09-23 10:42:27] 第 1 轮…`，取前 11 个字符里的日期。
+    首行认不出日期（文件被外部工具动过、或第一行恰好是个 traceback）时退回 mtime ——
+    有个近似答案比完全归档不了好，而且这种情况下 mtime 通常也够用。
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            first = f.readline(64)
+    except OSError:
+        return ""
+    if len(first) >= 12 and first[0] == "[":
+        candidate = first[1:11]
+        try:
+            datetime.strptime(candidate, "%Y-%m-%d")
+            return candidate
+        except ValueError:
+            pass
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d")
+    except OSError:
+        return ""
+
+
+def archive_if_stale(path, keep, now=None):
+    """实时日志里的内容如果不属于今天，就按它自己的日期归档走。返回归档到的路径。
+
+    `inspector.log` 一直是"当前正在写的那一份"；跨零点后第一次要写日志时，把它改名成
+    `inspector-<内容那天>.log`，然后重新开一个空的 `inspector.log` 继续写。
+    没有需要归档的东西（文件不存在、或内容就是今天的）返回空串。
+
+    ⚠️ **日期取文件内容那一天，不是今天**。2026-09-23 的日志在 09-24 零点后被归档，
+    要变成 `inspector-2026-09-23.log`（内容那天），不是 `-2026-09-24`。
+    这也是为什么归档必须在"写今天第一行之前"做：一旦今天的行混进去，文件就同时含有
+    两天的内容，再归档哪个日期都不对。
+
+    ⚠️ **进程跨零点停机也要能补归档**。所以判断依据是"文件内容属于哪一天"这个事实
+    （log_content_day 读首行），不是进程内存里记的"我上次写的是哪天" —— 后者重启就
+    丢了，会让昨天甚至上周的日志一直挂在 inspector.log 里，混着今天的内容。
+    apply_log_settings 在启动时也调一次，专门补这种情况。
+
+    目标文件已存在时（同一天内被归档过两次，例如手工改过系统时间）把内容**追加**
+    过去，不覆盖 —— 日志宁可混着也不能凭空少一段。
+    """
+    today = (now or datetime.now()).strftime("%Y-%m-%d")
+    day = log_content_day(path)
+    if not day or day == today:
+        return ""
+    target = dated_path(path, datetime.strptime(day, "%Y-%m-%d"))
+    try:
+        if os.path.exists(target):
+            # 极少见：同一天归档两次。追加而不是覆盖。
+            with open(path, encoding="utf-8", errors="replace") as src, \
+                    open(target, "a", encoding="utf-8") as dst:
+                shutil.copyfileobj(src, dst)
+            os.remove(path)
+        else:
+            os.replace(path, target)
+        # 同一天内的大小轮转产物（inspector.log.1/.2…）跟着一起归档，
+        # 否则它们会被第二天的内容继续往下挪，历史就串天了。
+        for i in range(1, max(keep, 0) + 1):
+            extra = f"{path}.{i}"
+            if os.path.exists(extra):
+                extra_target = f"{target}.{i}"
+                if os.path.exists(extra_target):
+                    os.remove(extra_target)
+                os.replace(extra, extra_target)
+    except OSError as e:
+        # 用 print 不用 log()：log() 会再调回这里，出错时互相递归
+        print(f"[日志归档失败] {path} → {target}：{e!r}", flush=True)
+        return ""
+    return target
+
+
+def write_log_line(path, line, max_bytes, keep, keep_days):
+    """把一行写进**实时日志**（path 本身），跨天时先把上一天的内容归档走。
+
+    留存分三层，各管一件事：
+      实时文件   `inspector.log`   —— 永远是"现在正在写的那一份"，tail -f 盯它就行
+      按天归档   `inspector-2026-09-23.log` —— 跨零点后由 archive_if_stale 改名生成
+      大小轮转   `inspector.log.1/.2`       —— 兜"某一天异常地大"，归档时一并带走
+
+    2026-09-23 改的就是第一层：原来直接往 `inspector-<今天>.log` 写，从来不存在
+    `inspector.log`，所以 tail 的目标每天都变、脚本和文档里的路径隔天就失效。
 
     按天清理不必每行都跑（一天上万行，等于上万次 listdir）：只在换天的那一行做。
     落盘失败只打一次性的错，不抛 —— 日志写不进去也不该让巡检停摆。
     """
     global _log_day_seen
-    target = dated_path(path)
     try:
-        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         today = datetime.now().strftime("%Y-%m-%d")
         if _log_day_seen.get(path) != today:
+            # 换天了（或进程刚起）：先把不属于今天的内容归档走，再清理过期归档。
+            # 顺序不能反 —— 先清理会让刚归档的那一份少算一天留存。
+            archive_if_stale(path, keep)
             _log_day_seen[path] = today
             cleanup_dated(path, keep_days)
-        rotate_file(target, max_bytes, keep)
-        with open(target, "a", encoding="utf-8") as f:
+        rotate_file(path, max_bytes, keep)
+        with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except OSError as e:
-        print(f"[日志落盘失败] {target}：{e!r}", flush=True)
+        print(f"[日志落盘失败] {path}：{e!r}", flush=True)
 
 
 def log_message_sent(kind, event, human, detail, dry_run):
@@ -185,6 +270,15 @@ def apply_log_settings(cfg):
     # 是事后最需要对账的东西。显式配成空串（messagesFile: ""）才关掉。
     raw_msgs = section.get("messagesFile", MESSAGES_LOG_DEFAULT)
     _messages_log_file = os.path.expanduser(str(raw_msgs)) if raw_msgs else ""
+    # ⚠️ 启动时先补一次归档。进程跨零点停机（09-15 那次事故停了好几天）时，
+    # inspector.log 里还是停机前那天的内容；不在这里归档，重启后今天的行会直接
+    # 追加进去，文件就同时含有两天甚至多天的内容，之后归档哪个日期都不对。
+    # write_log_line 里那次归档只在"本进程第一次写"时触发，语义相同、互为兜底。
+    for target in (_log_file, _messages_log_file):
+        if target:
+            archived = archive_if_stale(target, _log_keep)
+            if archived:
+                print(f"[日志归档] 上次运行的日志已归档为 {archived}", flush=True)
     return _log_file, _log_max_bytes, _log_keep
 
 
@@ -461,6 +555,9 @@ def inspect_once(cfg, round_no):
     """
     wall_started = time.monotonic()
     cpu_started = time.process_time()
+    # 本轮的 CC 项目索引只建一次，轮内 400 个群共用（见 project_index 那段注释）。
+    # 必须在扫群之前调用。
+    begin_round(round_no)
     humans = discover_digital_humans()
     discovery_ms = (time.monotonic() - wall_started) * 1000
     delivery = [h for h in humans if h["isDelivery"]]
@@ -776,6 +873,26 @@ def snapshot_ts(value, now_ms):
     return 0 if value > now_ms else value
 
 
+# 会话快照的解析缓存：(dbPath, sessionKey) -> (entry_json 原串, 解析好的 entry)
+#
+# 每轮 discover_digital_humans 都要把所有 session_nodes 的 entry_json 解一遍。
+# 实测线上素材 770 条记录、entry_json 合计 9.1MB，光 json.loads 就 25~32ms/轮；
+# 折算 400 群约 1000 条 → 33ms/轮，是 discover 那 113ms 里的最大一块。
+# 而这些快照绝大多数轮次根本没变（只有真在跑的那几个会话会更新）。
+#
+# ⚠️ **缓存键用 entry_json 原串比对，不用 session_nodes.updated_at**。
+# 实测否掉了 updated_at：它恒等于 `entry.updatedAt`，而有 3 条记录的
+# `startedAt`/`endedAt` 比它**新 300 秒**（`agent:zfqzzcxbs:cron:…` 那个会话）。
+# 拿 updated_at 当版本号会让这类记录一直命中旧解析结果 → activity_ts 读到陈旧值
+# → 步骤 0 把在跑的群判成僵尸群，整群漏报。
+#
+# ⚠️ 也**不存哈希**：实测 blake2b 比对 8.91ms，比直接比原串（0.19ms）慢 47 倍 ——
+# 哈希要把 9MB 全过一遍，而字符串比对在长度不等或首字节不同时立刻返回。
+# 代价是常驻约 9MB 内存，对一个每 30 秒跑一轮的巡检进程可以接受。
+_SESSION_ENTRY_CACHE = {}
+SESSION_ENTRY_CACHE_MAX = 8192
+
+
 def read_sessions(db_path):
     """读一个 agent 的会话库，返回 {sessionKey: entry}。读不了就返回空。
 
@@ -788,25 +905,50 @@ def read_sessions(db_path):
 
     下划线前缀表示"不是 openclaw 写的字段，是巡检器自己贴的"，免得和 entry 里的
     真实字段混淆。
+
+    2026-09-23 加了解析缓存（见 _SESSION_ENTRY_CACHE）。**返回的 entry 每次都是
+    新 dict**，因为调用方（collect_group_sessions 之外还有别处）可能往里写字段。
     """
     rows = _query(
         db_path,
         "SELECT session_key, current_session_id, entry_json, status FROM session_nodes",
     )
     out = {}
+    seen = set()
     for session_key, current_session_id, entry_json, status in rows:
         if not isinstance(session_key, str) or not session_key:
             continue
-        entry = json_object(entry_json) or {}
-        if not isinstance(entry, dict):
+        cache_key = (db_path, session_key)
+        seen.add(cache_key)
+        cached = _SESSION_ENTRY_CACHE.get(cache_key)
+        if cached is not None and cached[0] == entry_json:
+            parsed = cached[1]
+        else:
+            parsed = json_object(entry_json) or {}
+            if not isinstance(parsed, dict):
+                continue
+            if len(_SESSION_ENTRY_CACHE) >= SESSION_ENTRY_CACHE_MAX \
+                    and cache_key not in _SESSION_ENTRY_CACHE:
+                # 会话不断换 sid 时防无界增长。清空只影响性能，不影响结果。
+                _SESSION_ENTRY_CACHE.clear()
+            _SESSION_ENTRY_CACHE[cache_key] = (entry_json, parsed)
+        if not isinstance(parsed, dict):
             continue
+        # ⚠️ 必须浅拷一份再贴字段：缓存里那个 dict 会被后面的轮次复用，
+        # 直接往它身上写 _sessionId/_dbPath/status 就污染了缓存。
+        entry = dict(parsed)
         # session_nodes.status 是独立的一列，且比 entry_json 里那份更新得更勤
         # （entry_json 是整体快照）。列里有值就用列的。
+        # ⚠️ 这一列**不参与缓存键** —— 它变了但 entry_json 没变时，上面会命中缓存，
+        # 而这里每次都重新贴，所以拿到的 status 始终是本次查询读到的那个值。
         if isinstance(status, str) and status:
-            entry = {**entry, "status": status}
+            entry["status"] = status
         entry["_sessionId"] = current_session_id or entry.get("sessionId") or ""
         entry["_dbPath"] = db_path
         out[session_key] = entry
+    # 清掉这个库里已经消失的会话，别让常驻进程的缓存无界增长
+    for stale in [k for k in _SESSION_ENTRY_CACHE if k[0] == db_path and k not in seen]:
+        _SESSION_ENTRY_CACHE.pop(stale, None)
     return out
 
 
@@ -1189,22 +1331,87 @@ def _connect_ro(db_path):
         return None
 
 
+# 只读连接池：dbPath -> (连接, 打开时的 (st_dev, st_ino))
+#
+# 实测建连接占查询总耗时的 **98%**（644MB 的库：新开连接 0.567ms、复用 0.010ms）。
+# 而巡检器每群要开约 3.5 个连接，400 群 ≈ 1400 次/轮 ≈ 0.77s 纯连接开销。
+#
+# 复用是安全的，两条实测依据：
+#   · **autocommit 模式下每条 SELECT 都开新的读事务**，所以外部进程写入后，同一个
+#     长连连接立刻读得到（实测：另一进程 INSERT+UPDATE 之后，旧连接读到的是新值）。
+#     Python 的 sqlite3 只在执行 INSERT/UPDATE 这类语句时才隐式开事务，纯 SELECT
+#     不会把连接钉在某个快照上（`in_transaction` 实测恒为 False）。
+#   · 只读连接不写 -wal/-shm，不持有写锁，长连不影响 openclaw。
+#
+# ⚠️ **但库被整体替换时必须重开** —— 这是这个池唯一的真风险。MEMORY 记过：
+# "网关重启会把 agents/*/agent/*.sqlite 重建成 4KB 空库"。实测删除重建之后，
+# 旧连接还在读**已被删除的那个 inode**，里面是旧数据；表现是"某个 agent 的会话
+# 永远停在重启前的状态"，判定全程读陈旧数据，而且不报错。
+# 所以每次取用都 stat 一下比对 (st_dev, st_ino)，变了就关掉重开。stat 是几微秒，
+# 相对省下的 0.55ms 建连接完全划得来。
+_RO_CONN_POOL = {}
+RO_CONN_POOL_MAX = 64
+
+
+def _pooled_conn(db_path):
+    """取一个可复用的只读连接；库被替换过就重开。拿不到返回 None。"""
+    try:
+        st = os.stat(db_path)
+    except OSError:
+        _close_pooled(db_path)
+        return None
+    ident = (st.st_dev, st.st_ino)
+    cached = _RO_CONN_POOL.get(db_path)
+    if cached is not None:
+        if cached[1] == ident:
+            return cached[0]
+        _close_pooled(db_path)          # 同名不同 inode = 库被重建过，旧连接作废
+    conn = _connect_ro(db_path)
+    if conn is None:
+        return None
+    if len(_RO_CONN_POOL) >= RO_CONN_POOL_MAX:
+        # 实例/agent 特别多时兜底，避免文件句柄无界增长。
+        # 关掉最早进来的那个（dict 保序）；只影响性能，不影响结果。
+        _close_pooled(next(iter(_RO_CONN_POOL)))
+    _RO_CONN_POOL[db_path] = (conn, ident)
+    return conn
+
+
+def _close_pooled(db_path):
+    """关掉并移除池里某个连接（不存在就什么都不做）。"""
+    cached = _RO_CONN_POOL.pop(db_path, None)
+    if cached is not None:
+        try:
+            cached[0].close()
+        except sqlite3.Error:
+            pass
+
+
+def close_db_pool():
+    """关掉池里所有连接。进程退出、以及 verify/回放切换数据根时要调。"""
+    for db_path in list(_RO_CONN_POOL):
+        _close_pooled(db_path)
+
+
 def _query(db_path, sql, params=()):
     """在只读连接上跑一条查询，返回行列表。任何异常都返回空列表。
 
     库结构不符合预期（openclaw 又改了 schema）时，这里静默返回空 —— 和旧实现
     "文件读不到就当空"保持同一种失败姿态：判定会因为拿不到数据而走 unknown 分支，
     本轮什么都不做，不会误报。
+
+    连接走池（见 _RO_CONN_POOL）。查询本身出错时把连接关掉重来一次都不做 ——
+    保持"读不到就当空"这个姿态，下一轮 stat 比对会决定要不要重开。
     """
-    conn = _connect_ro(db_path)
+    conn = _pooled_conn(db_path)
     if conn is None:
         return []
     try:
         return conn.execute(sql, params).fetchall()
     except sqlite3.Error:
+        # 连接可能已经坏了（库被 vacuum、schema 变更等），丢掉它下轮重开
+        _close_pooled(db_path)
         return []
-    finally:
-        conn.close()
 
 
 # 事件摘要缓存：SQLite 的 `(session_id, seq)` 主键让“最新 seq”查询很便宜。绝大多数
@@ -1259,7 +1466,9 @@ def iter_events_reverse(db_path, table, session_id, limit=EVENT_SCAN_LIMIT):
         return
     if not db_path or not session_id:
         return
-    conn = _connect_ro(db_path)
+    # 走连接池（见 _RO_CONN_POOL）。**不能在 finally 里关连接** —— 池里那个还要给
+    # 别的查询用；生成器提前 break 时游标由 GC 回收，只读连接上没有需要收尾的事务。
+    conn = _pooled_conn(db_path)
     if conn is None:
         return
     try:
@@ -1272,9 +1481,8 @@ def iter_events_reverse(db_path, table, session_id, limit=EVENT_SCAN_LIMIT):
             if isinstance(raw, str) and raw.strip():
                 yield raw, i
     except sqlite3.Error:
+        _close_pooled(db_path)
         return
-    finally:
-        conn.close()
 
 
 def latest_event_ts(session, as_of_ms, scan_limit=EVENT_SCAN_LIMIT):
@@ -4589,37 +4797,138 @@ def read_meta_field(text, name):
     return ""
 
 
+# ===================== CC 项目索引（性能：把 O(群×项目) 降成 O(项目)）=====================
+#
+# 线上 2026-09-23 的症状：`本轮耗时 34.7s，已超过 30s 轮询间隔，退避 1s 后再巡检`，
+# 巡检群 400+。剖下来主因就在这里 —— find_cc_project 原来对**每个群**都 glob 一遍
+# `projects/*/META.md` 并把每个文件整篇读进来解析。复杂度是 O(群 × 项目)：
+#
+#   实测（合成 META.md，每篇 40 行填充）：
+#     100 个项目  单次 2.46ms → 400 群/轮  0.98s，每轮读  40,000 个文件
+#     300 个项目  单次 8.39ms → 400 群/轮  3.36s，每轮读 120,000 个文件
+#     600 个项目  单次 14.6ms → 400 群/轮  5.83s，每轮读 240,000 个文件
+#
+# 改成"每轮建一次索引、按群号查表"，复杂度降到 O(项目)。索引里**逐文件**按
+# (mtime, size) 复用上一轮的解析结果，所以稳定期每轮只有 1 次 glob + N 次 stat，
+# 连读都省了 —— 项目 META.md 只在交付推进时才写。
+#
+# ⚠️ **不改变任何判定结论**。索引存的就是原来那几个字段，选"同群多项目取 mtime 最新"
+# 这条规则也照搬。有一道逐群基准断言钉着优化前后结论逐字相同（verify_project_index）。
+#
+# ⚠️ 新鲜度边界：索引是**每轮一张快照**。这不比改前差 —— 改前是"轮到这个群时才读"，
+# 一轮 34 秒意味着最后一个群读到的数据本来就比第一个群晚 34 秒。现在统一成"本轮开始
+# 时的状态"，反而更一致（同一轮里 400 个群看到的项目状态相同）。
+_PROJECT_META_CACHE = {}      # meta_path -> (mtime, size, 解析出来的字段 dict)
+_PROJECT_INDEX = {"token": None, "byGroup": {}}
+_ROUND_TOKEN = None           # inspect_once 每轮 +1；None 表示"不在轮次里"（verify/回放）
+
+
+def begin_round(round_no):
+    """标记新一轮开始，让每轮只建一次 CC 项目索引。
+
+    ⚠️ 必须由 inspect_once 在**扫群之前**调用。漏了不会错、只会退化成"每次查都
+    重新校验一遍 mtime"（仍然比改前快，因为逐文件缓存还在），但就拿不到"一轮一张
+    快照"那个一致性了。
+
+    ⚠️ **直接把索引置为失效，不靠"轮次号变了"来判断**。第一版是后者，被基准断言
+    当场抓住：verify 里先跑了一次 inspect_once(round_no=1) 把 token 置成 1，随后
+    测试换了 CC_PROJECTS_DIR 又调 begin_round(1)，token 没变 → 复用了指向**另一个
+    目录**的旧索引，查什么都是 None。生产里轮次号单调递增碰不上，但"正确性依赖
+    计数器不重复"本身就是脆的（重启后从 1 重新计、调用方传错都会中）。
+    置空是无条件的，不依赖任何外部约定。
+    """
+    global _ROUND_TOKEN
+    _ROUND_TOKEN = round_no
+    _PROJECT_INDEX["token"] = None       # 本轮第一次查的时候重建
+
+
+def _load_project_meta(meta_path):
+    """读一个 META.md 并解出判据要的字段；(mtime,size) 没变就复用上次的解析结果。
+
+    按 (mtime, size) 而不是只看 mtime：同秒内改写且大小变了的情况 mtime 可能不变
+    （HFS+ 早期只有秒级精度）。两个都比，代价只是多取一个已经在 stat 结果里的字段。
+    """
+    try:
+        st = os.stat(meta_path)
+    except OSError:
+        _PROJECT_META_CACHE.pop(meta_path, None)
+        return None
+    stamp = (st.st_mtime, st.st_size)
+    cached = _PROJECT_META_CACHE.get(meta_path)
+    if cached and cached[0] == stamp[0] and cached[1] == stamp[1]:
+        return cached[2]
+    try:
+        with open(meta_path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        _PROJECT_META_CACHE.pop(meta_path, None)
+        return None
+    project_dir = os.path.dirname(meta_path)
+    fields = {
+        "groupId": read_meta_field(text, "群聊ID"),
+        "agentId": read_meta_field(text, "agentId"),
+        "mtime": st.st_mtime,
+        "projectKey": os.path.basename(project_dir),
+        "ccDir": os.path.join(CC_CONFIG_DIR,
+                              encode_cc_dir(os.path.join(project_dir, "src"))),
+        # 结项闸门要用的三个字段，顺手在这里取走 —— META.md 已经读进内存了，
+        # 再开一遍文件只是为了同样的三行，不值当。
+        "metaStatus": read_meta_field(text, "状态"),
+        "closeStatus": read_meta_field(text, "finalDeliveryCloseStatus"),
+        "closedAt": read_meta_field(text, "结项时间"),
+    }
+    _PROJECT_META_CACHE[meta_path] = (stamp[0], stamp[1], fields)
+    return fields
+
+
+def project_index(force=False):
+    """{群号: [项目字段, …]}，同群内按 mtime 从新到旧。
+
+    每轮建一次（靠 _ROUND_TOKEN 判断），轮内所有群共用。不在轮次里（verify / 回放）
+    时每次都重建 —— 那些场景不在乎这点开销，而正确性优先。
+    """
+    if (not force and _ROUND_TOKEN is not None
+            and _PROJECT_INDEX["token"] == _ROUND_TOKEN):
+        return _PROJECT_INDEX["byGroup"]
+    by_group = {}
+    seen = set()
+    for meta_path in glob.glob(os.path.join(CC_PROJECTS_DIR, "*", "META.md")):
+        seen.add(meta_path)
+        fields = _load_project_meta(meta_path)
+        if not fields:
+            continue
+        # ⚠️ 群聊ID 为空的 META.md 也要入索引（键就是空串），**不能跳过**。
+        # 第一版跳过了，被基准断言抓出行为差异：全量扫描版在查 group_id="" 时会
+        # 匹配上这种项目（`read_meta_field(...) != str("")` 不成立），索引版却返回
+        # None。查空群号在生产里不会发生（群号来自 sessionKey），但性能优化**不该
+        # 顺手改行为** —— 真要收紧"空群号不算匹配"，那是另一件事，得单独提。
+        by_group.setdefault(fields["groupId"], []).append(fields)
+    # 删掉已经不在盘上的条目，否则项目目录被清理后缓存会无界增长
+    for stale in set(_PROJECT_META_CACHE) - seen:
+        _PROJECT_META_CACHE.pop(stale, None)
+    for items in by_group.values():
+        items.sort(key=lambda f: f["mtime"], reverse=True)
+    _PROJECT_INDEX["token"] = _ROUND_TOKEN
+    _PROJECT_INDEX["byGroup"] = by_group
+    return by_group
+
+
 def find_cc_project(group_id, da_id=None):
-    """按群号找它对应的 CC 项目，返回 {"projectKey","ccDir"}；找不到返回 None。
+    """按群号找它对应的 CC 项目，返回 {"projectKey","ccDir",…}；找不到返回 None。
 
     群号写在 META.md 的「群聊ID」里。同一个群可能先后有多个项目，取 META.md 最新
     修改的那个（正在推进的那个项目文件才会被持续更新）。
+
+    2026-09-23 改成查索引（见上面那段），判定规则一字未改：还是"群号相等 +
+    agentId 为空或相等 + 同群取 mtime 最新"。
     """
-    best = None
-    for meta_path in glob.glob(os.path.join(CC_PROJECTS_DIR, "*", "META.md")):
-        try:
-            with open(meta_path, encoding="utf-8", errors="replace") as f:
-                text = f.read()
-            mtime = os.path.getmtime(meta_path)
-        except OSError:
+    for fields in project_index().get(str(group_id), ()):
+        if da_id and fields["agentId"] not in ("", str(da_id)):
             continue
-        if read_meta_field(text, "群聊ID") != str(group_id):
-            continue
-        if da_id and read_meta_field(text, "agentId") not in ("", str(da_id)):
-            continue
-        if best is None or mtime > best[0]:
-            project_dir = os.path.dirname(meta_path)
-            best = (mtime, {
-                "projectKey": os.path.basename(project_dir),
-                "ccDir": os.path.join(CC_CONFIG_DIR,
-                                      encode_cc_dir(os.path.join(project_dir, "src"))),
-                # 结项闸门要用的三个字段，顺手在这里取走 —— META.md 已经读进内存了，
-                # 再开一遍文件只是为了同样的三行，不值当。
-                "metaStatus": read_meta_field(text, "状态"),
-                "closeStatus": read_meta_field(text, "finalDeliveryCloseStatus"),
-                "closedAt": read_meta_field(text, "结项时间"),
-            })
-    return best[1] if best else None
+        # 索引里同群已按 mtime 倒序，第一个过 agentId 筛选的就是最新那个
+        return {k: fields[k] for k in ("projectKey", "ccDir", "metaStatus",
+                                       "closeStatus", "closedAt")}
+    return None
 
 
 # 「已结项」的判据。META.md 的「状态」字段值空间见生产的 project_meta.py：
@@ -5131,13 +5440,14 @@ def main():
     if log_file:
         dropped = cleanup_rotated(log_file, log_keep) + cleanup_rotated(ERRORS_PATH, log_keep)
         dropped += cleanup_dated(log_file, _log_keep_days)
-        log(f"日志落盘 {dated_path(log_file)}（按天分文件，留 {_log_keep_days} 天），"
+        log(f"日志落盘 {log_file}（实时；跨零点自动归档成 "
+            f"{os.path.basename(dated_path(log_file))} 这种形态，留 {_log_keep_days} 天），"
             f"单文件上限 {log_max / 1024 / 1024:.0f}MB，保留 {log_keep} 份历史"
             + (f"（启动时清掉 {dropped} 份超额历史）" if dropped else ""))
     if _messages_log_file:
         dropped = cleanup_dated(_messages_log_file, _log_keep_days)
-        log(f"话术日志 {dated_path(_messages_log_file)}"
-            f"（只记真发出去的群消息与唤起话术）"
+        log(f"话术日志 {_messages_log_file}"
+            f"（实时；跨零点同样自动归档。只记真发出去的群消息与唤起话术）"
             + (f"，启动时清掉 {dropped} 份超期历史" if dropped else ""))
 
     if args.errors:
@@ -5249,6 +5559,7 @@ def main():
             log(f"本轮耗时 {elapsed:.1f}s，已超过 {interval_ms / 1000:g}s 轮询间隔，"
                 f"退避 {MIN_OVERLOAD_BACKOFF_MS / 1000:g}s 后再巡检")
         _stop.wait(max(MIN_OVERLOAD_BACKOFF_MS / 1000, remaining))
+    close_db_pool()          # 退出前把长连的只读连接都关掉
     log(f"已跑 {round_no} 轮，退出。")
     return 0
 
