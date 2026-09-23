@@ -1833,6 +1833,49 @@ def _send_message_type(msg):
     return value if isinstance(value, str) else ""
 
 
+def _message_send_ok(msg):
+    """一条 `message` 工具的 toolResult 是否表示"消息真的投递出去了"。
+
+    和 `_send_result_ok`（send-user-message.py 那条路）保持同构 —— MEMORY 原则 16：
+    同一件事（判投递成没成）的判据散在两处迟早走偏，所以这里把判据写全、并在
+    两处互相写明。
+
+    判据按可信度取第一个在场的：
+      · `deliveryStatus == "sent"`  ← 直接信号。实测素材里 842 条成功投递**全部**
+        带这个字段且值恒为 "sent"，失败的 62 条压根没有它（它们是
+        `{"status":"error","tool":"message","error":"…群组不存在…"}`）。
+      · `result.success` / 顶层 `success` ← 兜底。**当前素材里一条都没出现**
+        （842 条的 `result` 里只有 receipt/messageId/channel/chatId），纯粹是防
+        将来字段变形；留着的理由见第 22 件事：`sent` 契约断裂时靠回退救过一次。
+
+    ⚠️ **解析不出 JSON 一律判失败**，这是刻意的保守。实测有 122 条结果是纯文本
+    `"Sent visible reply to the current source conversation via internal-ui."`
+    —— 它们对应的 toolCall 正文是 `ANNOUNCE_SKIP` 或零宽空格，是"这轮不对客"的
+    占位投递，认成对客会把静默基准推错，把该发的提醒压掉。
+    """
+    result = json_object(_tool_result_text(msg))
+    if result is None:
+        return False
+    status = result.get("deliveryStatus")
+    if isinstance(status, str) and status:
+        return status == "sent"
+    if isinstance(result.get("result"), dict):
+        return result["result"].get("success") is True
+    return result.get("success") is True
+
+
+def _message_send_target(msg):
+    """`message` 工具这次投递的目标（顶层 `to`），取不到返回空串。
+
+    形如 `jingme:dw.kjdcbz1:group:10233811673`，能直接喂给 parse_group_id。
+    实测 842 条成功投递里 841 条解得出群号，剩下 1 条是 `…:direct:wuxiaohong42`
+    （私信，不该算回复本群）。
+    """
+    result = json_object(_tool_result_text(msg)) or {}
+    value = result.get("to")
+    return value if isinstance(value, str) else ""
+
+
 # 这几种对客类型意味着"问题已经抛给用户了，正在等他回答" —— 球在用户脚下，
 # 这时候再提醒"我正在处理中"是噪音，甚至会让用户以为不用回答。
 #
@@ -1938,9 +1981,15 @@ def scan_transcript(session, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMIT):
     顺带的顺序特性：toolResult 排在它的 toolCall 后面，倒序反而是先看到结果、
     再看到调用，正好能在遇到 send 调用时立刻知道它成没成。
 
-    ⚠️ 数字人对客有**两种**方式，都得认，否则静默判定会持续误报：
+    ⚠️ 数字人对客有**三种**方式，都得认，否则静默判定会持续误报：
       1. 走 send-user-message.py（交付场景 AGENTS.md 规约要求）→ tDaSendOk
       2. 直接用 assistant 文本回复，由 openclaw 网关投递给用户 → tDaText
+      3. `message` 工具投递（2026-09-23 补，线上 kjdcbz 群回复的主路径）→ tDaSendOk
+         线上事故：群 10233811673 / 10234364016 连串"尚未回应"误报 —— 数字人明明
+         回了话，但它走的是 `message` 工具，前两种路径都认不出来，tDaSendOk 恒为 0。
+         判"真发出去了"认 `deliveryStatus == "sent"`（见 _message_send_ok），
+         并要求**发往本群**（见下面 this_group_id 那段）。
+         素材复核：18 个群的 tDaSendOk 被顶新，其中 7 个原本会误报"未回复"。
     实测（2026-08-22）两个群的形态完全相反：
       群 10232767188（交付群）send-user-message.py 252 次、assistant 文本 200 条
       群 10232848092（调试群）send-user-message.py   0 次、assistant 文本  22 条
@@ -1976,7 +2025,21 @@ def scan_transcript(session, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMIT):
         if cached is not None:
             return cached
 
-    exec_results = {}     # toolCallId -> (是否成功, 结果落盘时刻)
+    exec_results = {}     # toolCallId -> (是否成功, 结果落盘时刻, messageType)
+    message_results = {}  # toolCallId -> (是否成功, 结果落盘时刻, 投递目标 to)
+    # 本群群号：对客路径③要判"这次投递发的是不是本群"。
+    #
+    # ⚠️ 这道守卫是必须的，实测有跨群投递：`agent:wolong:main` 会话往群 10233815422
+    # 发消息、cron 会话（`agent:cfgp:cron:…`）往业务群发定时播报、私信会话往
+    # `…:direct:wuxiaohong42` 发。少了它，一个 cron 定时播报就能把某个群的
+    # tDaSendOk 顶新 → "用户的提问没人回"被静默压掉，那是漏报方向。
+    # 素材里 842 次成功投递中 838 次同群、4 次跨群/非群 —— 占比虽小，但压掉的
+    # 恰恰是"数字人没理用户"这种真问题。
+    #
+    # 解不出本群群号时（非群会话，如 main / cron / direct）置空串，此时任何带 to 的
+    # 投递都不会等于它 → 不计入对客。这是对的：那些会话本来就没有"本群"可言。
+    sess_key = (session.get("sessionKey") or "") if isinstance(session, dict) else ""
+    this_group_id = parse_group_id(sess_key) or ""
     if True:
         for raw, scanned in iter_events_reverse(db_path, "transcript_events",
                                                 session_id, limit=scan_limit):
@@ -2044,6 +2107,11 @@ def scan_transcript(session, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMIT):
                         out["dispatchTo"][dispatched_to] = ts
                         if not out["tDispatch"]:
                             out["tDispatch"] = ts
+                elif msg.get("toolName") == "message":
+                    # 对客路径③的结果暂存。和 exec_results 同构：倒序先遇到结果、
+                    # 后遇到 toolCall，所以在这里存下，等 assistant 分支取用。
+                    message_results[msg.get("toolCallId")] = (
+                        _message_send_ok(msg), ts, _message_send_target(msg))
             elif role == "assistant":
                 # 模型调用失败：消息流里是实时可见的，且带具体原因，比 trajectory 强
                 if msg.get("stopReason") == "error" and not out["tModelError"]:
@@ -2103,6 +2171,31 @@ def scan_transcript(session, as_of_ms=None, scan_limit=TRANSCRIPT_SCAN_LIMIT):
                             # 用结果落盘的时刻，那才是"真的发出去了"的时间
                             out["tDaSendOk"] = result_ts or ts
                             out["lastSendType"] = send_type
+                    # 对客路径③：`message` 工具投递。只认 action=send、投递成功、
+                    # 且**发往本群**的那次。
+                    if (not out["tDaSendOk"]
+                            and c.get("name") == "message"
+                            and str(((c.get("arguments") or {}).get("action")) or "") == "send"):
+                        sent_ok, result_ts, send_target = message_results.get(
+                            c.get("id"), (False, 0, ""))
+                        # 结果里没有 to 时不放宽成"算本群"：那批正是 internal-ui 的
+                        # ANNOUNCE_SKIP 占位投递（_message_send_ok 已经判它们失败，
+                        # 这里再把"目标不明"也挡住，两道独立的门）。
+                        if sent_ok and send_target and this_group_id \
+                                and parse_group_id(send_target) == this_group_id:
+                            out["tDaSendOk"] = result_ts or ts
+                            # 显式置空 lastSendType，把"这条路径不产生 messageType"
+                            # 写在代码里，而不是依赖它恰好还是初始值。
+                            #
+                            # 当前**不置空也不会错**：倒序扫描 + 两条路径都带
+                            # `not out["tDaSendOk"]` 守卫，所以最新那次投递先命中、
+                            # 更早的 exec 分支根本不会执行，lastSendType 留在 ""。
+                            # 但这个正确性是"两个守卫的副作用"，不是写明的意图 ——
+                            # 哪天有人给某条路径放宽守卫（比如改成"取最晚的那次"），
+                            # 就会出现"上一轮 exec 的 clarification + 这一轮的新时刻"
+                            # 凑成一对，被 is_awaiting_user() 判成"正在等用户回答"，
+                            # REMIND 和文案双双闭嘴。置空这一行让那种改动不会静默出错。
+                            out["lastSendType"] = ""
 
             if out["tUser"] and out["tDaSendOk"] and out["tDaText"] and out["lastToolCall"]:
                 break            # 要的都齐了，不用再往前扫
