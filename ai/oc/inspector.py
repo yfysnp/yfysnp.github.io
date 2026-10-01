@@ -3695,6 +3695,7 @@ def read_workflow_open_nodes(group_id, da_id, now_ms):
                 started = _workflow_ts(execution.get("startedAt"))
                 if not started or started > now_ms:
                     continue
+                wf = execution.get("waitingFor") or {}
                 out.append({
                     "node": node_id,
                     "executionId": execution.get("executionId") or "",
@@ -3702,6 +3703,9 @@ def read_workflow_open_nodes(group_id, da_id, now_ms):
                     "instanceId": data.get("workflowInstanceId") or "",
                     "workflowId": data.get("workflowId") or "",
                     "projectKey": project_key,
+                    # 节点停在 waitForEvent（如 zqjz.user.approved 用户确认门）时
+                    # 记下事件名：这类节点 open 是流程设计（等用户拍板），不是没人接手。
+                    "waitingForEvent": (wf.get("event") if isinstance(wf, dict) else None),
                 })
     out.sort(key=lambda x: x["startedAt"])
     return out
@@ -3832,6 +3836,14 @@ def check_workflow_node_stalled(human, group_id, sessions, cfg, now_ms,
     executor_of = workflow_executors(human)
 
     for node in open_nodes:
+        # 节点停在用户确认门（waitForEvent=zqjz.user.approved 等）不算"没人接手"：
+        # 工作早已完成并验收，节点 open 是等用户拍板的流程设计。这是编排层的权威
+        # 事实，直接来自 state.json 节点级 waitingFor；比 is_awaiting_user() 只看
+        # 数字人会话层澄清/确认记录更完整——2026-09-29 群 10234322633 testing：
+        # 验收已 passed、确认卡已发，仅因用户未确认 open 6 天，会话层守卫又被巡检器
+        # 自己 30 秒一轮的 progress 通知冲掉，ALERT_WORKFLOW_NODE_STALLED 持续误报。
+        if node.get("waitingForEvent"):
+            continue
         if now_ms - node["startedAt"] <= stalled:
             continue
         executor = executor_of.get(node["node"], "")
