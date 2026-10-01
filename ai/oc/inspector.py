@@ -3695,6 +3695,7 @@ def read_workflow_open_nodes(group_id, da_id, now_ms):
                 started = _workflow_ts(execution.get("startedAt"))
                 if not started or started > now_ms:
                     continue
+                wf = execution.get("waitingFor") or {}
                 out.append({
                     "node": node_id,
                     "executionId": execution.get("executionId") or "",
@@ -3702,6 +3703,9 @@ def read_workflow_open_nodes(group_id, da_id, now_ms):
                     "instanceId": data.get("workflowInstanceId") or "",
                     "workflowId": data.get("workflowId") or "",
                     "projectKey": project_key,
+                    # 节点停在 waitForEvent（如 zqjz.user.approved 用户确认门）时
+                    # 记下事件名：这类节点 open 是流程设计（等用户拍板），不是没人接手。
+                    "waitingForEvent": (wf.get("event") if isinstance(wf, dict) else None),
                 })
     out.sort(key=lambda x: x["startedAt"])
     return out
