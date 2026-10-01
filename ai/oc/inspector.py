@@ -3695,7 +3695,6 @@ def read_workflow_open_nodes(group_id, da_id, now_ms):
                 started = _workflow_ts(execution.get("startedAt"))
                 if not started or started > now_ms:
                     continue
-                wf = execution.get("waitingFor") or {}
                 out.append({
                     "node": node_id,
                     "executionId": execution.get("executionId") or "",
@@ -3703,9 +3702,6 @@ def read_workflow_open_nodes(group_id, da_id, now_ms):
                     "instanceId": data.get("workflowInstanceId") or "",
                     "workflowId": data.get("workflowId") or "",
                     "projectKey": project_key,
-                    # 节点停在 waitForEvent（如 zqjz.user.approved 用户确认门）时
-                    # 记下事件名：这类节点 open 是流程设计（等用户拍板），不是没人接手。
-                    "waitingForEvent": (wf.get("event") if isinstance(wf, dict) else None),
                 })
     out.sort(key=lambda x: x["startedAt"])
     return out
@@ -3882,11 +3878,11 @@ def check_workflow_node_stalled(human, group_id, sessions, cfg, now_ms,
             "sessionKey": da["sessionKey"],
             "channel": da["channel"],
             "target": da["target"],
-            # "还没有人接"而不是"一直没有接手"：后者带责备语气，而这个判据兜的
-            # 恰恰是"派发没落地"——多半根本没派到 executor 那里，不是它不肯接。
+            # 巡检器只报告任务状态长时间未更新，不替业务判断执行者是否真的未开始。
+            # 具体是在等待用户、执行中、状态未同步，还是需要补派，由数字员工核对。
             "text": (f"⚠️ {da_name} 的工作流节点「{node['node']}」已开启 "
-                     f"{fmt_duration(waited)}，{who}还没有开始执行。"
-                     f"\n　　{recovery_hint(cfg)}"),
+                     f"{fmt_duration(waited)}，任务状态仍未更新。"
+                     f"\n　　已自动唤起数字人核对当前任务状态。"),
             "detail": {
                 "gate": {"key": "WORKFLOW_NODE_STALLED_MS", "measured": waited},
                 "node": node["node"],
@@ -4140,9 +4136,8 @@ def wake_message_for(event):
             f"你派给 {detail.get('sub', '基础 Agent')} 的那次执行异常中断且未恢复，"
             f"请只处理这一项",
         "ALERT_WORKFLOW_NODE_STALLED":
-            f"工作流节点「{detail.get('node', '?')}」开着但一直没人接手"
-            f"（执行者 {detail.get('executor') or '未知'}），"
-            f"请只确认这一个节点的派发是否落地",
+            f"工作流节点「{detail.get('node', '?')}」已开启较长时间，任务状态仍未更新，"
+            f"请只核对当前任务状态",
     }.get(event["type"], "当前会话有异常，请只检查当前这一轮的状态")
     return f"{WAKE_MESSAGE_PREFIX} {reason}。"
 
