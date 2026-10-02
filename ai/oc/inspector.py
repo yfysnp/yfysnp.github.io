@@ -2752,9 +2752,11 @@ def decide(human, group_id, sessions, cfg, now_ms=None, as_of_ms=None, scan_limi
             in_flight = True
             if as_of_ms is None:
                 open_nodes = read_workflow_open_nodes(group_id, human.get("daId"), now_ms)
-                executor_of = workflow_executors(human)
                 failed_sub = failed_event["detail"]["sub"]
-                in_flight = any(executor_of.get(node["node"]) == failed_sub
+                # 方案 C：按每个节点自带的 workflowId 精确读定义取执行者，
+                # 自定义命名的流程（daixiao-* / cf-* 等）零配置生效；
+                # workflowId 缺失或定义读不到时 executor_for_node 回退全局表。
+                in_flight = any(executor_for_node(human, node) == failed_sub
                                 for node in open_nodes)
             if in_flight:
                 trace.append(f"步骤0 活跃检查：最近活动 {shown} 前，但检测到基础 Agent "
@@ -3833,6 +3835,8 @@ def check_workflow_node_stalled(human, group_id, sessions, cfg, now_ms,
     stalled = threshold(cfg, "WORKFLOW_NODE_STALLED_MS")
     dispatched = transcript.get("dispatchTo") or {}
     received = transcript.get("recvFrom") or {}
+    # 方案 C：executor_of 仅作回退；循环内优先用 executor_for_node 按各节点
+    # 自带的 workflowId 精确读定义（自定义命名流程零配置生效）。
     executor_of = workflow_executors(human)
 
     for node in open_nodes:
@@ -3846,7 +3850,8 @@ def check_workflow_node_stalled(human, group_id, sessions, cfg, now_ms,
             continue
         if now_ms - node["startedAt"] <= stalled:
             continue
-        executor = executor_of.get(node["node"], "")
+        # 方案 C 精确路径：先按该节点自带的 workflowId 读定义；读不到再回退全局表
+        executor = executor_for_node(human, node) or executor_of.get(node["node"], "")
 
         # 判据 5：按证据强度逐层确认执行者是否已经接手。2026-09-15 群 10233867871
         # 的 backend-dev 已有 task.ack、沈括 trajectory 正在持续 tool.call，CC 也在跑；
@@ -3910,6 +3915,13 @@ def workflow_executors(human):
     不冲突（实测 zqjz-full-delivery 和 zqjz-delivery-clarify-standalone 的同名节点
     executor 一致）。读不到就返回空字典，判据 4 会退化成"不看执行者"—— 那样只会
     更保守（更容易被别的告警的辖区判定挡住），不会误报。
+
+    ⚠️ 已知盲区（2026-10-01 群 10234683716 实测）：本表只扫 DELIVERY_WORKFLOW_PATTERNS
+    （zqjz-*）命中的定义文件，自定义命名的流程（如财富 daixiao-*、cf-*）读不进来，
+    其独有节点的执行者查不到。旁路 in_flight 校验与功能 24 已改走
+    executor_for_node()（按实例 state.json 的 workflowId 精确读定义），本表仅作
+    其回退路径。新增自定义流程前缀时优先保证「内部 id == 文件名」约定，
+    executor_for_node 即可零配置生效。
     """
     out = {}
     wf_dir = os.path.join(human.get("instDir") or "", "private-experts",
@@ -3927,6 +3939,59 @@ def workflow_executors(human):
                 if node_id and executor and node_id not in out:
                     out[node_id] = executor
     return out
+
+
+# 每个数字人工作流定义的解析缓存：{da_id: {workflow_id: {node_id: executor}}}。
+# 精确读单个定义文件，读不到时缓存空 dict，避免每轮对同一文件重复付费。
+_WF_DEF_EXECUTOR_CACHE = {}
+
+
+def workflow_def_executors(human, workflow_id):
+    """按 workflowId 精确读单个工作流定义，返回 {节点 id: 执行者 agentId}。
+
+    数据源是实例 state.json 顶层 workflowId（read_workflow_open_nodes 每项都带）。
+    路径约定「定义文件名 == 工作流内部 id」（全机 140+ 实例实测成立；唯一例外
+    aizf 的废弃 bak 备份名对不上，反而天然不会被读——正是这个性质让它比
+    全目录扫描更安全）。读不到/解析失败返回空 dict，由调用方回退全局表。
+    """
+    da_id = human.get("daId") or ""
+    per_da = _WF_DEF_EXECUTOR_CACHE.setdefault(da_id, {})
+    if workflow_id in per_da:
+        return per_da[workflow_id]
+    out = {}
+    wf_dir = os.path.join(human.get("instDir") or "", "private-experts",
+                          da_id, "workflow")
+    # workflow_id 来自本机 state.json，但拼进文件路径前仍按防御处理：剥掉路径分隔符
+    # 与目录跳转段，杜绝任何相对路径逃逸。
+    safe_id = str(workflow_id).replace("/", "_").replace("\\", "_").replace("..", "_")
+    path = os.path.join(wf_dir, safe_id + ".json")
+    data = json_object_from_file(path) or {}
+    for node in (data.get("nodes") or []):
+        if not isinstance(node, dict):
+            continue
+        node_id = node.get("id")
+        executor = node.get("executor")
+        if node_id and executor and node_id not in out:
+            out[node_id] = executor
+    per_da[workflow_id] = out
+    return out
+
+
+def executor_for_node(human, node):
+    """查一个 open 工作流节点的执行者 agentId（方案 C 精确路径 + 全局表回退）。
+
+    优先按 node 项自带的 workflowId 读对应定义文件取 executor（自定义命名的流程
+    也零配置生效）；workflowId 缺失、定义文件不存在、节点不在定义里时回退
+    workflow_executors() 全局表（保持旧行为，宁可退化成"不看执行者"也不空转）。
+    node 是 read_workflow_open_nodes 返回的项（含 node/workflowId 等键）。
+    """
+    wf_id = (node or {}).get("workflowId") or ""
+    if wf_id:
+        precise = workflow_def_executors(human, wf_id)
+        executor = precise.get(node.get("node"))
+        if executor:
+            return executor
+    return workflow_executors(human).get(node.get("node"), "")
 
 
 def check_sub_run_failed(human, group_id, sessions, cfg, now_ms, as_of_ms=None,
